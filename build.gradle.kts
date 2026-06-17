@@ -10,6 +10,8 @@ allprojects {
 
     repositories {
         mavenCentral()
+        // Confluent artifacts (kafka-avro-serializer, schema-registry-client) are not on Maven Central.
+        maven { url = uri("https://packages.confluent.io/maven/") }
     }
 }
 

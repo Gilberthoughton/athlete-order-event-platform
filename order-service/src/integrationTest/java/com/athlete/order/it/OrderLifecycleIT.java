@@ -1,5 +1,6 @@
 package com.athlete.order.it;
 
+import com.athlete.order.contracts.avro.OrderEventType;
 import com.fasterxml.jackson.databind.JsonNode;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -68,12 +69,13 @@ class OrderLifecycleIT extends AbstractIntegrationTest {
             assertThat(dispatched).isEqualTo(1);
         });
 
-        // 4. The record actually lands on Kafka, keyed by orderId.
-        String published = awaitKafkaRecord("order.events",
+        // 4. The Avro record actually lands on Kafka, keyed by orderId.
+        var published = awaitKafkaRecord("order.events",
                 record -> orderId.toString().equals(record.key())
-                        && record.value().contains("OrderConfirmed"),
+                        && record.value().getEventType() == OrderEventType.ORDER_CONFIRMED,
                 Duration.ofSeconds(20));
-        assertThat(published).contains(orderId.toString()).contains("OrderConfirmed");
+        assertThat(published.getAggregateId()).isEqualTo(orderId.toString());
+        assertThat(published.getTotalAmount()).isEqualTo("129.99");
 
         // 5. The read-model projection is updated to CONFIRMED.
         await().atMost(Duration.ofSeconds(20)).untilAsserted(() -> {

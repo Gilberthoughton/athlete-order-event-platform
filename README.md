@@ -5,13 +5,14 @@ omnichannel retail. Every order's state is an immutable, replayable stream of ev
 downstream contexts (inventory, fulfillment, notifications, analytics) integrate through
 versioned events on Kafka, published reliably with a transactional outbox.
 
-> **Project status:** Phase 3 — observable and verified end to end. The architecture is documented
-> under [`docs/`](docs/) (10 ADRs + C4/domain views); the buildable `order-service` and
+> **Project status:** Phase 4 — governed contracts, observable, verified end to end. The architecture
+> is documented under [`docs/`](docs/) (10 ADRs + C4/domain views); the buildable `order-service` and
 > `inventory-consumer` modules implement the event-sourced order core, transactional outbox with a
-> polling relay, the confirmation saga, projections, an idempotent downstream consumer, and full
+> polling relay, the confirmation saga, projections, an idempotent **Avro** consumer, **Schema-Registry
+> governed event contracts** (see [Event Contract Governance](#event-contract-governance)), and full
 > observability (Prometheus metrics, structured JSON logs, correlation IDs, health probes — see
-> [Observability](#observability)). **30 tests pass** — 21 unit + 9 Testcontainers integration tests
-> that exercise the real Postgres + Kafka + outbox path (see [Verified with Testcontainers](#verified-with-testcontainers)).
+> [Observability](#observability)). **34 tests pass** — 25 unit + 9 Testcontainers integration tests
+> that exercise the real Postgres + Kafka + Avro + outbox path (see [Verified with Testcontainers](#verified-with-testcontainers)).
 
 ---
 
@@ -79,7 +80,7 @@ that enforce each guarantee are in [`docs/architecture/data-model.md`](docs/arch
 | **Java 21 + Spring Boot 3** | Order service | Mature JVM concurrency, virtual threads, first-class Kafka/JPA/observability support. |
 | **PostgreSQL** | Event store, outbox, read models | ACID appends, unique-constraint concurrency control, partitioning, operational familiarity. |
 | **Apache Kafka (KRaft)** | Integration backbone | Durable, partitioned, replayable transport for the public event contract; single-node KRaft (no ZooKeeper) for a light local boot. |
-| **JSON event envelope** *(Phase 1–2)* | Wire contract | Self-describing `eventType` + `schemaVersion` + payload; registry-free so the stack boots from one `compose.yaml`. Avro + Schema Registry is the documented target ([ADR 0004](docs/adr/0004-avro-schema-registry-backward-compat.md)). |
+| **Avro + Confluent Schema Registry** | Wire contract + governance | Integration events are Avro, governed by the registry with `BACKWARD` compatibility; schemas evolve safely and breaking changes fail the build ([ADR 0004](docs/adr/0004-avro-schema-registry-backward-compat.md), [Event Contract Governance](#event-contract-governance)). |
 | **Flyway** | Schema migrations | Versioned, reviewable database changes. |
 | **Docker / Docker Compose** | Local orchestration | `docker compose up` boots the full stack for development and the demo. |
 | **Testcontainers** | Integration testing | Tests run against real Postgres and Kafka, not mocks. |
@@ -103,7 +104,9 @@ Implementation proceeds in phases so each layer is provable before the next is a
   saga, outbox, projection, and consumer; structured JSON logging with request/event correlation
   IDs; liveness/readiness probes; and a provisioned Prometheus + Grafana stack. *(Still ahead:
   OpenTelemetry/OTLP distributed tracing, consumer-lag panels.)*
-- **Phase 4 — Contract hardening**: Avro + Schema Registry, contract tests, CI compatibility checks.
+- **Phase 4 — Contract hardening** *(done)*: Avro integration events governed by the Confluent
+  Schema Registry with `BACKWARD` compatibility; consumer deserializes Avro; a build-time
+  compatibility test fails fast on breaking changes. See [Event Contract Governance](#event-contract-governance).
 - **Phase 5 — Load test + hardening**: Gatling/k6 scenario with published methodology and
   measured numbers; tuning; runbook.
 
@@ -114,10 +117,10 @@ Two tiers, kept separate so the fast tier needs no Docker:
 - **Unit tests (`./gradlew test`, no Docker):** Given-When-Then aggregate tests (*given* prior
   events, *when* a command, *then* assert the emitted events/rejection) over the pure, I/O-free
   domain; the confirmation saga driven over in-memory fakes (happy path, payment-decline,
-  out-of-stock compensation, transient-failure retry, idempotent re-drive); and consumer
-  idempotency over fakes. **19 tests.**
+  out-of-stock compensation, transient-failure retry, idempotent re-drive); consumer idempotency
+  over fakes; Avro serde round-trips; and schema-compatibility checks. **25 tests.**
 - **Integration tests (`./gradlew integrationTest`, requires Docker):** the real
-  Postgres + Kafka path via Testcontainers. **7 tests** — see below.
+  Postgres + Kafka + Avro path via Testcontainers. **9 tests** — see below.
 
 ### Verified with Testcontainers
 
@@ -126,7 +129,8 @@ and all pass:
 
 | Test | What it proves |
 |------|----------------|
-| `OrderLifecycleIT` | REST `POST /api/orders` → domain events persisted to Postgres → integration event written to the outbox → dispatched by the polling relay → **record observed on the Kafka topic** → read-model projection updated to `CONFIRMED`. |
+| `OrderLifecycleIT` | REST `POST /api/orders` → domain events persisted to Postgres → integration event written to the outbox → serialized to **Avro** and dispatched by the polling relay → **Avro record observed on the Kafka topic** → read-model projection updated to `CONFIRMED`. |
+| `ObservabilityIT` (×2) | Liveness/readiness probes report UP; `/actuator/prometheus` exposes the domain metrics after traffic. |
 | `OutboxReliabilityIT` (×2) | A successful publish marks the outbox row dispatched and the record reaches Kafka; a publish against an unreachable broker **leaves the row undispatched (retryable)**, and a healthy relay then dispatches it. |
 | `OutboxAtomicityIT` | When the outbox write fails, the domain-event append in the same transaction is **rolled back** — proving event store + outbox commit atomically (no dual write). |
 | `ProjectionRebuildIT` | The read model is cleared and **rebuilt deterministically by replaying** the event stream from position 0. |
@@ -165,6 +169,57 @@ export TESTCONTAINERS_HOST_OVERRIDE="$(colima ls -j | python3 -c 'import sys,jso
 ```
 
 (The build pins the Docker API version to 1.40+ for the test JVM, which modern daemons require.)
+
+## Event Contract Governance
+
+Integration events are a **public contract** consumed by independently deployed services, so they
+are governed — not hand-rolled JSON.
+
+**Avro schema.** The contract is a single flat Avro record,
+[`order-integration-event.avsc`](order-service/src/main/avro/order-integration-event.avsc): stable
+metadata (`eventId`, `eventType`, `aggregateId`, `correlationId`, `occurredAt`, `schemaVersion`) plus
+an `eventType` enum discriminator and nullable, type-specific fields. The Gradle Avro plugin generates
+the Java classes at build time (which also validates the schema syntax).
+
+**Schema Registry + BACKWARD compatibility.** The relay serializes with Confluent's
+`KafkaAvroSerializer`; the consumer deserializes with `KafkaAvroDeserializer`. A `cp-schema-registry`
+runs in `compose.yaml` with compatibility level `BACKWARD` — a new schema must be able to read data
+written with the previous one. Avro serialization happens **in the relay, not the order transaction**,
+so a registry outage can never block order processing (the outbox write stays registry-free).
+
+**Safe evolution — allowed vs breaking:**
+
+| Change | Backward-compatible? |
+|--------|----------------------|
+| Add a field with `"default"` (e.g. nullable `["null","string"]`, default `null`) | ✅ allowed |
+| Add an enum symbol *(with a default for the enum)* | ✅ allowed |
+| Remove a field that had a default | ✅ allowed |
+| Add a required field with no default | ❌ breaking |
+| Rename a field, or change its type | ❌ breaking |
+| Remove/rename an enum symbol in use | ❌ breaking |
+
+**Fail fast in CI.** [`SchemaCompatibilityTest`](order-service/src/test/java/com/athlete/order/contracts/SchemaCompatibilityTest.java)
+asserts the BACKWARD rule with Avro's `SchemaCompatibility` API (allowed change → compatible; required
+field with no default → incompatible) and that the generated contract is self-compatible. A breaking
+edit fails `./gradlew test` before it can reach a running registry.
+
+**Contract-only coupling.** `inventory-consumer` shares **no code** with the producer — it owns its
+[own copy of the schema](inventory-consumer/src/main/avro/order-integration-event.avsc) and generates
+its own classes (ADR 0003 / ADR 0010). Schema Registry compatibility + Avro schema resolution let the
+two evolve independently.
+
+**Verified vs local-demo vs production:**
+
+- **Verified in tests:** real Confluent `KafkaAvroSerializer`/`KafkaAvroDeserializer`, the Avro wire
+  format (magic byte + schema id + binary), specific-record deserialization, and round-trips over a
+  real Kafka container — run against an **in-JVM mock Schema Registry** (`mock://`), so no registry
+  container is needed in CI.
+- **Local-demo only:** the real `cp-schema-registry` in `compose.yaml` (compatibility enforcement,
+  the registry REST API) is for manual local use, not exercised by the automated tests.
+- **Production differences:** disable `auto.register.schemas` and register/evolve schemas through a
+  CI pipeline against the central registry; add a registry compatibility-check gate; secure the
+  registry (auth/TLS); and consider per-event-type subjects (`RecordNameStrategy`) if the topic
+  carries many event types.
 
 ## Observability
 
@@ -209,7 +264,7 @@ not yet wired** — the correlation ID is the current tracing primitive. That is
 ## Local development
 
 ```bash
-docker compose up -d                       # PostgreSQL (orders + fulfillment dbs) + Kafka (KRaft)
+docker compose up -d                       # PostgreSQL + Kafka (KRaft) + Schema Registry (:8081)
 ./gradlew :order-service:bootRun           # start the order service        (http://localhost:8080)
 ./gradlew :inventory-consumer:bootRun      # start the downstream consumer   (http://localhost:8081)
 ./gradlew test                             # unit + fake-driven tests across both modules

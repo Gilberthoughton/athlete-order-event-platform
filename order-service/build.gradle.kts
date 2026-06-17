@@ -1,9 +1,21 @@
+plugins {
+    // Generates Java classes from the Avro schemas under src/main/avro (validates them at build time).
+    id("com.github.davidmc24.gradle.plugin.avro") version "1.9.1"
+}
+
 dependencies {
     implementation("org.springframework.boot:spring-boot-starter-web")
     implementation("org.springframework.boot:spring-boot-starter-jdbc")
     implementation("org.springframework.boot:spring-boot-starter-validation")
     implementation("org.springframework.boot:spring-boot-starter-actuator")
     implementation("org.springframework.kafka:spring-kafka")
+
+    // Avro integration-event contract + Confluent Schema Registry serializer.
+    implementation("org.apache.avro:avro")
+    implementation("io.confluent:kafka-avro-serializer:7.6.1")
+    // The Confluent schema-registry client references org.apache.commons.codec.Charsets but does
+    // not pull commons-codec transitively under Boot's dependency management; add it explicitly.
+    implementation("commons-codec:commons-codec")
 
     // Observability: Prometheus metrics + structured JSON logging.
     implementation("io.micrometer:micrometer-registry-prometheus")
@@ -16,6 +28,11 @@ dependencies {
     runtimeOnly("org.flywaydb:flyway-database-postgresql")
 
     testImplementation("org.springframework.boot:spring-boot-starter-test")
+}
+
+avro {
+    // Generate java.lang.String fields (not CharSequence) for ergonomic code.
+    stringType.set("String")
 }
 
 // ---------------------------------------------------------------------------

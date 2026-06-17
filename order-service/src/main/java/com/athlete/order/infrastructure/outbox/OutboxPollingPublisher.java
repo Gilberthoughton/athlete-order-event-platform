@@ -38,12 +38,17 @@ public class OutboxPollingPublisher {
     private static final String MARK_SQL = "UPDATE outbox SET dispatched_at = now() WHERE id = ?";
 
     private final JdbcTemplate jdbc;
-    private final KafkaTemplate<String, String> kafka;
+    private final KafkaTemplate<String, Object> kafka;
+    private final OutboxAvroMapper avroMapper;
     private final OrderMetrics metrics;
 
-    public OutboxPollingPublisher(JdbcTemplate jdbc, KafkaTemplate<String, String> kafka, OrderMetrics metrics) {
+    public OutboxPollingPublisher(JdbcTemplate jdbc,
+                                  KafkaTemplate<String, Object> kafka,
+                                  OutboxAvroMapper avroMapper,
+                                  OrderMetrics metrics) {
         this.jdbc = jdbc;
         this.kafka = kafka;
+        this.avroMapper = avroMapper;
         this.metrics = metrics;
     }
 
@@ -58,7 +63,8 @@ public class OutboxPollingPublisher {
 
         for (OutboxRow row : batch) {
             try {
-                kafka.send(row.topic(), row.aggregateId(), row.payload()).get(5, TimeUnit.SECONDS);
+                Object avroEvent = avroMapper.toAvro(row.payload());
+                kafka.send(row.topic(), row.aggregateId(), avroEvent).get(5, TimeUnit.SECONDS);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 log.warn("relay interrupted at outbox id {}; retrying next tick", row.id());

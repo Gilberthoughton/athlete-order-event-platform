@@ -1,18 +1,20 @@
 # ADR 0004 — Avro + Schema Registry with BACKWARD compatibility for integration events
 
-- **Status:** Accepted (target); **phased** — see "Phased adoption" below
-- **Date:** 2026-06-15
+- **Status:** Accepted — **implemented** (Phase 4)
+- **Date:** 2026-06-15 (implemented 2026-06-17)
 - **Deciders:** Platform engineering
 
-> **Phased adoption.** Avro + Schema Registry is the **target** contract format and the
-> decision of record for production. To keep the reference implementation bootable from a
-> single `compose.yaml` (Postgres + Kafka only, no Schema Registry container), **Phase 1–2
-> serialize integration events as a self-describing JSON envelope** (`eventType` +
-> `schemaVersion` + payload — see the [event catalog](../architecture/event-catalog.md)).
-> The compatibility *discipline* (additive, defaulted fields only) is followed from day one,
-> so migrating to Avro is a serialization-layer change behind the existing `MessageRelay` /
-> consumer-deserialization seams, not a redesign. Schema Registry + Avro land in the
-> production-hardening phase. The rest of this ADR describes that target state.
+> **Implemented.** Integration events are now Avro, serialized through the Confluent Schema
+> Registry. The contract is [`order-integration-event.avsc`](../../order-service/src/main/avro/order-integration-event.avsc);
+> the relay serializes with `KafkaAvroSerializer` and the `inventory-consumer` deserializes
+> with `KafkaAvroDeserializer` (specific reader). A `cp-schema-registry` runs in `compose.yaml`
+> with compatibility level `BACKWARD`. Tests run the real Confluent serializers against an
+> in-JVM mock registry, plus a [SchemaCompatibilityTest](../../order-service/src/test/java/com/athlete/order/contracts/SchemaCompatibilityTest.java)
+> that fails the build on a breaking change. See the README "Event Contract Governance" section.
+>
+> *Earlier phases used a self-describing JSON envelope so the stack booted without a registry;
+> the compatibility discipline was followed from day one, so this was a serialization-layer
+> swap behind the relay / consumer-deserialization seams, not a redesign.*
 
 ## Context
 

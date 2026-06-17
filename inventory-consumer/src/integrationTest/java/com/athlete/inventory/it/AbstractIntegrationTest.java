@@ -1,5 +1,6 @@
 package com.athlete.inventory.it;
 
+import com.athlete.order.contracts.avro.OrderIntegrationEvent;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
@@ -18,12 +19,15 @@ import java.util.Properties;
 
 /**
  * Base for inventory-consumer integration tests. Real PostgreSQL and Kafka (Apache KRaft) run in
- * Testcontainers. Tests publish to Kafka with a raw producer to exercise the consumer exactly as
- * the order-service would.
+ * Testcontainers. Tests publish Avro events to Kafka with a raw producer wired to the same in-JVM
+ * mock Schema Registry ({@code mock://aoep-it}) the consumer uses, exercising the consumer exactly
+ * as the order-service would over the wire contract.
  */
 @Testcontainers
 @ActiveProfiles("it")
 public abstract class AbstractIntegrationTest {
+
+    protected static final String MOCK_REGISTRY = "mock://aoep-it";
 
     @Container
     @ServiceConnection
@@ -39,13 +43,14 @@ public abstract class AbstractIntegrationTest {
         registry.add("spring.kafka.bootstrap-servers", KAFKA::getBootstrapServers);
     }
 
-    protected static void send(String topic, String key, String value) {
+    protected static void send(String topic, String key, OrderIntegrationEvent event) {
         Properties props = new Properties();
         props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, KAFKA.getBootstrapServers());
         props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
-        props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
-        try (KafkaProducer<String, String> producer = new KafkaProducer<>(props)) {
-            producer.send(new ProducerRecord<>(topic, key, value));
+        props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, "io.confluent.kafka.serializers.KafkaAvroSerializer");
+        props.put("schema.registry.url", MOCK_REGISTRY);
+        try (KafkaProducer<String, OrderIntegrationEvent> producer = new KafkaProducer<>(props)) {
+            producer.send(new ProducerRecord<>(topic, key, event));
             producer.flush();
         }
     }

@@ -55,15 +55,30 @@ public class JdbcOutboxRepository implements OutboxRepository {
         }
     }
 
-    private String envelope(UUID eventId, OrderId orderId, IntegrationEvent event, Instant occurredAt) {
+    /**
+     * Writes a flat envelope (metadata + type-specific fields) that maps 1:1 to the Avro wire
+     * record. The relay translates this to {@link com.athlete.order.contracts.avro.OrderIntegrationEvent}
+     * at publish time, keeping Avro/registry concerns out of the order transaction.
+     */
+    private String envelope(UUID eventId, OrderId orderId, IntegrationEvent event, Instant fallbackTime) {
         ObjectNode root = mapper.createObjectNode();
         root.put("eventId", eventId.toString());
         root.put("eventType", event.eventType());
         root.put("schemaVersion", event.schemaVersion());
         root.put("aggregateId", orderId.value().toString());
-        root.put("occurredAt", occurredAt.toString());
         root.put("correlationId", orderId.value().toString());
-        root.set("payload", mapper.valueToTree(event));
+        switch (event) {
+            case IntegrationEvent.OrderConfirmed e -> {
+                root.put("occurredAt", e.confirmedAt().toEpochMilli());
+                root.put("athleteId", e.athleteId().value().toString());
+                root.put("totalAmount", e.total().amount().toPlainString());
+                root.put("currency", e.total().currency().getCurrencyCode());
+            }
+            case IntegrationEvent.OrderCancelled e -> {
+                root.put("occurredAt", e.cancelledAt().toEpochMilli());
+                root.put("reasonCode", e.reasonCode());
+            }
+        }
         try {
             return mapper.writeValueAsString(root);
         } catch (JsonProcessingException e) {

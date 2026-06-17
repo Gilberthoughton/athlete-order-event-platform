@@ -1,5 +1,7 @@
 package com.athlete.inventory.it;
 
+import com.athlete.order.contracts.avro.OrderEventType;
+import com.athlete.order.contracts.avro.OrderIntegrationEvent;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -7,6 +9,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.math.BigDecimal;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 
@@ -31,14 +34,14 @@ class ConsumerIT extends AbstractIntegrationTest {
         UUID orderId = UUID.randomUUID();
         UUID eventId = UUID.randomUUID();
 
-        send(TOPIC, orderId.toString(), confirmedEnvelope(eventId, orderId, "129.99"));
+        send(TOPIC, orderId.toString(), confirmed(eventId, orderId, "129.99"));
 
         await().atMost(Duration.ofSeconds(20))
                 .untilAsserted(() -> assertThat(statusOf(orderId)).isEqualTo("CONFIRMED"));
         assertThat(amountOf(orderId)).isEqualByComparingTo("129.99");
 
         // Redeliver the same eventId with a different amount; dedup must ignore it.
-        send(TOPIC, orderId.toString(), confirmedEnvelope(eventId, orderId, "999.99"));
+        send(TOPIC, orderId.toString(), confirmed(eventId, orderId, "999.99"));
         await().during(Duration.ofSeconds(4)).atMost(Duration.ofSeconds(10))
                 .untilAsserted(() -> assertThat(amountOf(orderId)).isEqualByComparingTo("129.99"));
     }
@@ -47,7 +50,7 @@ class ConsumerIT extends AbstractIntegrationTest {
     void cancelled_event_marks_order_cancelled() {
         UUID orderId = UUID.randomUUID();
 
-        send(TOPIC, orderId.toString(), cancelledEnvelope(UUID.randomUUID(), orderId, "PAYMENT_DECLINED:LIMIT_EXCEEDED"));
+        send(TOPIC, orderId.toString(), cancelled(UUID.randomUUID(), orderId, "PAYMENT_DECLINED:LIMIT_EXCEEDED"));
 
         await().atMost(Duration.ofSeconds(20))
                 .untilAsserted(() -> assertThat(statusOf(orderId)).isEqualTo("CANCELLED"));
@@ -67,18 +70,29 @@ class ConsumerIT extends AbstractIntegrationTest {
         return rows.isEmpty() ? null : rows.get(0);
     }
 
-    private static String confirmedEnvelope(UUID eventId, UUID orderId, String amount) {
-        return """
-                {"eventId":"%s","eventType":"OrderConfirmed","schemaVersion":1,"aggregateId":"%s",
-                 "payload":{"orderId":{"value":"%s"},"total":{"amount":%s,"currency":"USD"},
-                 "confirmedAt":"2026-06-16T00:00:00Z"}}
-                """.formatted(eventId, orderId, orderId, amount);
+    private static OrderIntegrationEvent confirmed(UUID eventId, UUID orderId, String amount) {
+        return OrderIntegrationEvent.newBuilder()
+                .setEventId(eventId.toString())
+                .setEventType(OrderEventType.ORDER_CONFIRMED)
+                .setAggregateId(orderId.toString())
+                .setCorrelationId(orderId.toString())
+                .setOccurredAt(Instant.now().toEpochMilli())
+                .setSchemaVersion(1)
+                .setAthleteId(UUID.randomUUID().toString())
+                .setTotalAmount(amount)
+                .setCurrency("USD")
+                .build();
     }
 
-    private static String cancelledEnvelope(UUID eventId, UUID orderId, String reason) {
-        return """
-                {"eventId":"%s","eventType":"OrderCancelled","schemaVersion":1,"aggregateId":"%s",
-                 "payload":{"orderId":{"value":"%s"},"reasonCode":"%s","cancelledAt":"2026-06-16T00:00:00Z"}}
-                """.formatted(eventId, orderId, orderId, reason);
+    private static OrderIntegrationEvent cancelled(UUID eventId, UUID orderId, String reason) {
+        return OrderIntegrationEvent.newBuilder()
+                .setEventId(eventId.toString())
+                .setEventType(OrderEventType.ORDER_CANCELLED)
+                .setAggregateId(orderId.toString())
+                .setCorrelationId(orderId.toString())
+                .setOccurredAt(Instant.now().toEpochMilli())
+                .setSchemaVersion(1)
+                .setReasonCode(reason)
+                .build();
     }
 }

@@ -1,0 +1,18 @@
+{
+  "type": "record",
+  "name": "OrderIntegrationEvent",
+  "namespace": "com.athlete.order.contracts.avro",
+  "doc": "Consumer-owned copy of the order.events contract. inventory-consumer shares no code with the producer (ADR 0003/0010); it depends only on this schema. Schema Registry + BACKWARD compatibility let the producer evolve this independently — the consumer keeps reading older/newer writer schemas via Avro schema resolution.",
+  "fields": [
+    {"name": "eventId", "type": "string", "doc": "Globally unique event id; basis for consumer idempotency"},
+    {"name": "eventType", "type": {"type": "enum", "name": "OrderEventType", "symbols": ["ORDER_CONFIRMED", "ORDER_CANCELLED"]}, "doc": "Discriminator for the event kind"},
+    {"name": "aggregateId", "type": "string", "doc": "The orderId"},
+    {"name": "correlationId", "type": "string", "doc": "Groups all events of one business flow"},
+    {"name": "occurredAt", "type": "long", "doc": "When the fact happened, epoch milliseconds (UTC)"},
+    {"name": "schemaVersion", "type": "int", "default": 1, "doc": "Producer-declared contract version"},
+    {"name": "athleteId", "type": ["null", "string"], "default": null},
+    {"name": "totalAmount", "type": ["null", "string"], "default": null},
+    {"name": "currency", "type": ["null", "string"], "default": null},
+    {"name": "reasonCode", "type": ["null", "string"], "default": null}
+  ]
+}

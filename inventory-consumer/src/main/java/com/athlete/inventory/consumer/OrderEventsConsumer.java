@@ -1,7 +1,6 @@
 package com.athlete.inventory.consumer;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import com.athlete.order.contracts.avro.OrderIntegrationEvent;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
@@ -13,9 +12,10 @@ import java.math.BigDecimal;
 import java.util.UUID;
 
 /**
- * Consumes order integration events and maintains the fulfillment read model. Delivery is
- * at-least-once, so the listener is idempotent: it records each {@code eventId} in an inbox and
- * skips events it has already processed. Inbox write and read-model update share one transaction.
+ * Consumes order integration events (Avro, deserialized via the Schema Registry) and maintains the
+ * fulfillment read model. Delivery is at-least-once, so the listener is idempotent: it records each
+ * {@code eventId} in an inbox and skips events already processed. Inbox write and read-model update
+ * share one transaction. The consumer depends only on the Avro contract, not on producer code.
  */
 @Component
 public class OrderEventsConsumer {
@@ -27,70 +27,55 @@ public class OrderEventsConsumer {
     private final ProcessedEventStore processedEvents;
     private final FulfillmentStore fulfillment;
     private final ConsumerMetrics metrics;
-    private final ObjectMapper mapper;
 
     public OrderEventsConsumer(ProcessedEventStore processedEvents,
                                FulfillmentStore fulfillment,
-                               ConsumerMetrics metrics,
-                               ObjectMapper mapper) {
+                               ConsumerMetrics metrics) {
         this.processedEvents = processedEvents;
         this.fulfillment = fulfillment;
         this.metrics = metrics;
-        this.mapper = mapper;
     }
 
     @KafkaListener(
             topics = "${aoep.topics.order-events:order.events}",
             groupId = "${spring.kafka.consumer.group-id:inventory-consumer}")
     @Transactional
-    public void onMessage(String message) {
-        OrderEventEnvelope envelope = parse(message);
-        MDC.put(MDC_CORRELATION_ID, correlationId(envelope));
+    public void onMessage(OrderIntegrationEvent event) {
+        String eventType = event.getEventType().name();
+        MDC.put(MDC_CORRELATION_ID, correlationId(event));
         try {
-            metrics.received(envelope.eventType());
-            if (!processedEvents.markProcessed(envelope.eventId())) {
-                metrics.duplicateIgnored(envelope.eventType());
-                log.debug("duplicate event {} ignored", envelope.eventId());
+            metrics.received(eventType);
+            UUID eventId = UUID.fromString(event.getEventId());
+            if (!processedEvents.markProcessed(eventId)) {
+                metrics.duplicateIgnored(eventType);
+                log.debug("duplicate event {} ignored", eventId);
                 return;
             }
-            handle(envelope);
-            metrics.applied(envelope.eventType());
+            handle(event);
+            metrics.applied(eventType);
         } finally {
             MDC.remove(MDC_CORRELATION_ID);
         }
     }
 
-    private static String correlationId(OrderEventEnvelope envelope) {
-        if (envelope.correlationId() != null) {
-            return envelope.correlationId().toString();
-        }
-        return envelope.aggregateId() != null ? envelope.aggregateId().toString() : "unknown";
-    }
-
-    private void handle(OrderEventEnvelope envelope) {
-        JsonNode payload = envelope.payload();
-        switch (envelope.eventType()) {
-            case "OrderConfirmed" -> {
-                JsonNode total = payload.path("total");
-                BigDecimal amount = new BigDecimal(total.path("amount").asText("0"));
-                String currency = total.path("currency").asText("USD");
-                fulfillment.recordConfirmed(envelope.aggregateId(), amount, currency);
-                log.info("fulfillment requested for confirmed order {}", envelope.aggregateId());
+    private void handle(OrderIntegrationEvent event) {
+        UUID orderId = UUID.fromString(event.getAggregateId());
+        switch (event.getEventType()) {
+            case ORDER_CONFIRMED -> {
+                fulfillment.recordConfirmed(orderId, new BigDecimal(event.getTotalAmount()), event.getCurrency());
+                log.info("fulfillment requested for confirmed order {}", orderId);
             }
-            case "OrderCancelled" -> {
-                String reason = payload.path("reasonCode").asText("UNKNOWN");
-                fulfillment.recordCancelled(envelope.aggregateId(), reason);
-                log.info("order {} cancelled ({}), released from fulfillment", envelope.aggregateId(), reason);
+            case ORDER_CANCELLED -> {
+                fulfillment.recordCancelled(orderId, event.getReasonCode());
+                log.info("order {} cancelled ({}), released from fulfillment", orderId, event.getReasonCode());
             }
-            default -> log.debug("ignoring unhandled event type {}", envelope.eventType());
         }
     }
 
-    private OrderEventEnvelope parse(String message) {
-        try {
-            return mapper.readValue(message, OrderEventEnvelope.class);
-        } catch (Exception e) {
-            throw new IllegalStateException("failed to parse order event envelope", e);
+    private static String correlationId(OrderIntegrationEvent event) {
+        if (event.getCorrelationId() != null) {
+            return event.getCorrelationId();
         }
+        return event.getAggregateId() != null ? event.getAggregateId() : "unknown";
     }
 }

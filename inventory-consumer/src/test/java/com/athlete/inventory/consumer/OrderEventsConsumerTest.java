@@ -1,22 +1,26 @@
 package com.athlete.inventory.consumer;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
+import com.athlete.order.contracts.avro.OrderEventType;
+import com.athlete.order.contracts.avro.OrderIntegrationEvent;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Verifies the consumer applies an event exactly once under at-least-once (duplicate) delivery,
- * and that it handles both confirmed and cancelled events — using fakes, no Kafka or DB.
+ * Verifies the consumer applies an Avro event exactly once under at-least-once (duplicate) delivery
+ * and handles both confirmed and cancelled events — using fakes, no Kafka, DB, or registry.
  */
 class OrderEventsConsumerTest {
 
@@ -28,18 +32,17 @@ class OrderEventsConsumerTest {
     void setUp() {
         processed = new FakeProcessedEventStore();
         fulfillment = new FakeFulfillmentStore();
-        consumer = new OrderEventsConsumer(processed, fulfillment,
-                new ConsumerMetrics(new SimpleMeterRegistry()), new ObjectMapper());
+        consumer = new OrderEventsConsumer(processed, fulfillment, new ConsumerMetrics(new SimpleMeterRegistry()));
     }
 
     @Test
     void duplicate_delivery_is_processed_only_once() {
         UUID eventId = UUID.randomUUID();
         UUID orderId = UUID.randomUUID();
-        String message = confirmedEnvelope(eventId, orderId, "129.99", "USD");
+        OrderIntegrationEvent event = confirmed(eventId, orderId, "129.99");
 
-        consumer.onMessage(message);
-        consumer.onMessage(message); // redelivery
+        consumer.onMessage(event);
+        consumer.onMessage(event); // redelivery
 
         assertThat(fulfillment.confirmedCount()).isEqualTo(1);
         assertThat(fulfillment.statusOf(orderId)).isEqualTo("CONFIRMED");
@@ -48,25 +51,36 @@ class OrderEventsConsumerTest {
     @Test
     void cancelled_event_marks_the_order_cancelled() {
         UUID orderId = UUID.randomUUID();
-        String message = cancelledEnvelope(UUID.randomUUID(), orderId, "PAYMENT_DECLINED:LIMIT_EXCEEDED");
 
-        consumer.onMessage(message);
+        consumer.onMessage(cancelled(UUID.randomUUID(), orderId, "PAYMENT_DECLINED:LIMIT_EXCEEDED"));
 
         assertThat(fulfillment.statusOf(orderId)).isEqualTo("CANCELLED");
     }
 
-    private static String confirmedEnvelope(UUID eventId, UUID orderId, String amount, String currency) {
-        return """
-                {"eventId":"%s","eventType":"OrderConfirmed","aggregateId":"%s",
-                 "payload":{"total":{"amount":%s,"currency":"%s"}}}
-                """.formatted(eventId, orderId, amount, currency);
+    private static OrderIntegrationEvent confirmed(UUID eventId, UUID orderId, String amount) {
+        return OrderIntegrationEvent.newBuilder()
+                .setEventId(eventId.toString())
+                .setEventType(OrderEventType.ORDER_CONFIRMED)
+                .setAggregateId(orderId.toString())
+                .setCorrelationId(orderId.toString())
+                .setOccurredAt(Instant.now().toEpochMilli())
+                .setSchemaVersion(1)
+                .setAthleteId(UUID.randomUUID().toString())
+                .setTotalAmount(amount)
+                .setCurrency("USD")
+                .build();
     }
 
-    private static String cancelledEnvelope(UUID eventId, UUID orderId, String reason) {
-        return """
-                {"eventId":"%s","eventType":"OrderCancelled","aggregateId":"%s",
-                 "payload":{"reasonCode":"%s"}}
-                """.formatted(eventId, orderId, reason);
+    private static OrderIntegrationEvent cancelled(UUID eventId, UUID orderId, String reason) {
+        return OrderIntegrationEvent.newBuilder()
+                .setEventId(eventId.toString())
+                .setEventType(OrderEventType.ORDER_CANCELLED)
+                .setAggregateId(orderId.toString())
+                .setCorrelationId(orderId.toString())
+                .setOccurredAt(Instant.now().toEpochMilli())
+                .setSchemaVersion(1)
+                .setReasonCode(reason)
+                .build();
     }
 
     // ---- fakes ----
@@ -82,7 +96,7 @@ class OrderEventsConsumerTest {
 
     private static final class FakeFulfillmentStore implements FulfillmentStore {
         private final List<UUID> confirmed = new ArrayList<>();
-        private final java.util.Map<UUID, String> status = new java.util.HashMap<>();
+        private final Map<UUID, String> status = new HashMap<>();
 
         @Override
         public void recordConfirmed(UUID orderId, BigDecimal totalAmount, String currency) {

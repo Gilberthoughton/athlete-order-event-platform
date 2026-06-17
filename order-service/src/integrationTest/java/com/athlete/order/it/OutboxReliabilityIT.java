@@ -1,6 +1,8 @@
 package com.athlete.order.it;
 
+import com.athlete.order.contracts.avro.OrderEventType;
 import com.athlete.order.infrastructure.observability.OrderMetrics;
+import com.athlete.order.infrastructure.outbox.OutboxAvroMapper;
 import com.athlete.order.infrastructure.outbox.OutboxPollingPublisher;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.common.serialization.StringSerializer;
@@ -13,6 +15,7 @@ import org.springframework.kafka.core.KafkaTemplate;
 
 import java.sql.Timestamp;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
@@ -38,6 +41,9 @@ class OutboxReliabilityIT extends AbstractIntegrationTest {
     @Autowired
     OrderMetrics metrics;
 
+    @Autowired
+    OutboxAvroMapper avroMapper;
+
     @Test
     void successful_publish_marks_row_dispatched_and_emits_to_kafka() {
         UUID orderId = UUID.randomUUID();
@@ -47,9 +53,9 @@ class OutboxReliabilityIT extends AbstractIntegrationTest {
         publisher.publishPending();
 
         assertThat(dispatchedAt(eventId)).isNotNull();
-        String value = awaitKafkaRecord("order.events",
+        var event = awaitKafkaRecord("order.events",
                 record -> orderId.toString().equals(record.key()), Duration.ofSeconds(15));
-        assertThat(value).contains("OrderConfirmed");
+        assertThat(event.getEventType()).isEqualTo(OrderEventType.ORDER_CONFIRMED);
     }
 
     @Test
@@ -58,8 +64,8 @@ class OutboxReliabilityIT extends AbstractIntegrationTest {
         UUID eventId = UUID.randomUUID();
         insertOutboxRow(orderId, eventId);
 
-        // A relay pointed at an unreachable broker fails to publish.
-        OutboxPollingPublisher broken = new OutboxPollingPublisher(jdbc, brokenKafkaTemplate(), metrics);
+        // A relay whose producer cannot reach the broker fails to publish.
+        OutboxPollingPublisher broken = new OutboxPollingPublisher(jdbc, brokenKafkaTemplate(), avroMapper, metrics);
         broken.publishPending();
         assertThat(dispatchedAt(eventId)).isNull(); // still pending -> retryable
 
@@ -71,10 +77,12 @@ class OutboxReliabilityIT extends AbstractIntegrationTest {
     // ---- helpers ----
 
     private void insertOutboxRow(UUID orderId, UUID eventId) {
+        // Flat envelope matching what JdbcOutboxRepository writes and OutboxAvroMapper reads.
         String envelope = """
                 {"eventId":"%s","eventType":"OrderConfirmed","schemaVersion":1,
-                 "aggregateId":"%s","payload":{"orderId":{"value":"%s"}}}
-                """.formatted(eventId, orderId, orderId);
+                 "aggregateId":"%s","correlationId":"%s","occurredAt":%d,
+                 "athleteId":"%s","totalAmount":"129.99","currency":"USD"}
+                """.formatted(eventId, orderId, orderId, Instant.now().toEpochMilli(), UUID.randomUUID());
         jdbc.update("""
                 INSERT INTO outbox (event_id, aggregate_id, topic, event_type, schema_version,
                                     payload, correlation_id, created_at)
@@ -87,11 +95,12 @@ class OutboxReliabilityIT extends AbstractIntegrationTest {
                 Timestamp.class, eventId);
     }
 
-    private static KafkaTemplate<String, String> brokenKafkaTemplate() {
+    private static KafkaTemplate<String, Object> brokenKafkaTemplate() {
         Map<String, Object> props = new HashMap<>();
         props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:1"); // nothing listening
         props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class);
-        props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class);
+        props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, "io.confluent.kafka.serializers.KafkaAvroSerializer");
+        props.put("schema.registry.url", "mock://aoep-broken");
         props.put(ProducerConfig.MAX_BLOCK_MS_CONFIG, 2000);
         props.put(ProducerConfig.DELIVERY_TIMEOUT_MS_CONFIG, 2000);
         props.put(ProducerConfig.REQUEST_TIMEOUT_MS_CONFIG, 1500);
