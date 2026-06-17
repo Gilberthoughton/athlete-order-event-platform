@@ -1,0 +1,7 @@
+# Integration-test profile (activated by @ActiveProfiles("it")). Additive on top of the main
+# application.yml; datasource and Kafka bootstrap are injected by Testcontainers @ServiceConnection.
+logging:
+  level:
+    org.apache.kafka: WARN
+    org.testcontainers: INFO
+    com.athlete: INFO

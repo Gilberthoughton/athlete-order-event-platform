@@ -1,0 +1,36 @@
+spring:
+  application:
+    name: order-service
+  datasource:
+    url: ${ORDERS_DB_URL:jdbc:postgresql://localhost:5432/orders}
+    username: ${ORDERS_DB_USER:aoep}
+    password: ${ORDERS_DB_PASSWORD:aoep}
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP:localhost:9092}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      acks: all
+      properties:
+        enable.idempotence: true
+
+server:
+  port: 8080
+
+aoep:
+  outbox:
+    poll-interval-ms: 1000
+  projection:
+    poll-interval-ms: 1000
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: always
