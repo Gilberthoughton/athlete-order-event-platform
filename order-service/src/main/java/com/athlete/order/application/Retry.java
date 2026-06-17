@@ -19,6 +19,12 @@ public final class Retry {
     }
 
     public static <T> T withRetries(int maxAttempts, Supplier<T> action) {
+        return withRetries(maxAttempts, action, () -> {
+        });
+    }
+
+    /** As {@link #withRetries(int, Supplier)}, invoking {@code onRetry} before each retry attempt. */
+    public static <T> T withRetries(int maxAttempts, Supplier<T> action, Runnable onRetry) {
         TransientFailureException last = null;
         for (int attempt = 1; attempt <= maxAttempts; attempt++) {
             try {
@@ -27,6 +33,7 @@ public final class Retry {
                 last = e;
                 log.warn("transient failure on attempt {}/{}: {}", attempt, maxAttempts, e.getMessage());
                 if (attempt < maxAttempts) {
+                    onRetry.run();
                     sleep(50L * attempt);
                 }
             }

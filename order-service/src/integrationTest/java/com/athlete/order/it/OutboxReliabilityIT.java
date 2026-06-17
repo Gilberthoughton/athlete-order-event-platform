@@ -1,5 +1,6 @@
 package com.athlete.order.it;
 
+import com.athlete.order.infrastructure.observability.OrderMetrics;
 import com.athlete.order.infrastructure.outbox.OutboxPollingPublisher;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.common.serialization.StringSerializer;
@@ -34,6 +35,9 @@ class OutboxReliabilityIT extends AbstractIntegrationTest {
     @Autowired
     JdbcTemplate jdbc;
 
+    @Autowired
+    OrderMetrics metrics;
+
     @Test
     void successful_publish_marks_row_dispatched_and_emits_to_kafka() {
         UUID orderId = UUID.randomUUID();
@@ -55,7 +59,7 @@ class OutboxReliabilityIT extends AbstractIntegrationTest {
         insertOutboxRow(orderId, eventId);
 
         // A relay pointed at an unreachable broker fails to publish.
-        OutboxPollingPublisher broken = new OutboxPollingPublisher(jdbc, brokenKafkaTemplate());
+        OutboxPollingPublisher broken = new OutboxPollingPublisher(jdbc, brokenKafkaTemplate(), metrics);
         broken.publishPending();
         assertThat(dispatchedAt(eventId)).isNull(); // still pending -> retryable
 

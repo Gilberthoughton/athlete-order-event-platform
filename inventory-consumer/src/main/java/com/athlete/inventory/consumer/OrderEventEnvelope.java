@@ -15,5 +15,6 @@ public record OrderEventEnvelope(
         UUID eventId,
         String eventType,
         UUID aggregateId,
+        UUID correlationId,
         JsonNode payload) {
 }

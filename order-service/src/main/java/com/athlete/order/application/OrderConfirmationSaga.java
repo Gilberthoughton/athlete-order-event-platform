@@ -5,6 +5,7 @@ import com.athlete.order.application.port.PaymentGateway;
 import com.athlete.order.domain.Order;
 import com.athlete.order.domain.model.OrderId;
 import com.athlete.order.domain.model.OrderStatus;
+import com.athlete.order.infrastructure.observability.OrderMetrics;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -29,13 +30,16 @@ public class OrderConfirmationSaga {
     private final OrderApplicationService orders;
     private final PaymentGateway paymentGateway;
     private final InventoryAllocator inventoryAllocator;
+    private final OrderMetrics metrics;
 
     public OrderConfirmationSaga(OrderApplicationService orders,
                                  PaymentGateway paymentGateway,
-                                 InventoryAllocator inventoryAllocator) {
+                                 InventoryAllocator inventoryAllocator,
+                                 OrderMetrics metrics) {
         this.orders = orders;
         this.paymentGateway = paymentGateway;
         this.inventoryAllocator = inventoryAllocator;
+        this.metrics = metrics;
     }
 
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
@@ -45,6 +49,7 @@ public class OrderConfirmationSaga {
         } catch (RuntimeException e) {
             // The order stays AWAITING_CONFIRMATION and is recovered by the reconciliation sweep;
             // never let a saga failure propagate out of the after-commit phase.
+            metrics.sagaCompleted("failed");
             log.error("saga failed for order {}; will be reconciled", event.orderId(), e);
         }
     }
@@ -59,11 +64,12 @@ public class OrderConfirmationSaga {
         String authorizationId = order.paymentAuthorizationId().orElse(null);
 
         if (!order.paymentAuthorized()) {
-            PaymentGateway.Result payment =
-                    Retry.withRetries(MAX_ATTEMPTS, () -> paymentGateway.authorize(orderId, order.total()));
+            PaymentGateway.Result payment = Retry.withRetries(MAX_ATTEMPTS,
+                    () -> paymentGateway.authorize(orderId, order.total()), metrics::sagaRetry);
             if (payment.declined()) {
                 log.info("payment declined for order {}: {}", orderId, payment.reasonCode());
                 orders.recordPaymentDeclined(orderId, payment.reasonCode());
+                metrics.sagaCompleted("cancelled");
                 return;
             }
             authorizationId = payment.authorizationId();
@@ -71,17 +77,19 @@ public class OrderConfirmationSaga {
         }
 
         if (!order.inventoryAllocated()) {
-            InventoryAllocator.Result allocation =
-                    Retry.withRetries(MAX_ATTEMPTS, () -> inventoryAllocator.allocate(orderId, order.lines()));
+            InventoryAllocator.Result allocation = Retry.withRetries(MAX_ATTEMPTS,
+                    () -> inventoryAllocator.allocate(orderId, order.lines()), metrics::sagaRetry);
             if (allocation.failed()) {
                 log.info("inventory allocation failed for order {}: {}", orderId, allocation.reasonCode());
                 compensatePayment(authorizationId);
                 orders.recordInventoryAllocationFailed(orderId, allocation.reasonCode());
+                metrics.sagaCompleted("cancelled");
                 return;
             }
             orders.recordInventoryAllocated(orderId, allocation.allocations());
         }
         // OrderConfirmed is emitted inside the aggregate once both steps have been recorded.
+        metrics.sagaCompleted("confirmed");
     }
 
     private void compensatePayment(String authorizationId) {

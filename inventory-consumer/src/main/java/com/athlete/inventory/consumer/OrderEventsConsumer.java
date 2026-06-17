@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
@@ -21,15 +22,20 @@ public class OrderEventsConsumer {
 
     private static final Logger log = LoggerFactory.getLogger(OrderEventsConsumer.class);
 
+    private static final String MDC_CORRELATION_ID = "correlationId";
+
     private final ProcessedEventStore processedEvents;
     private final FulfillmentStore fulfillment;
+    private final ConsumerMetrics metrics;
     private final ObjectMapper mapper;
 
     public OrderEventsConsumer(ProcessedEventStore processedEvents,
                                FulfillmentStore fulfillment,
+                               ConsumerMetrics metrics,
                                ObjectMapper mapper) {
         this.processedEvents = processedEvents;
         this.fulfillment = fulfillment;
+        this.metrics = metrics;
         this.mapper = mapper;
     }
 
@@ -39,11 +45,26 @@ public class OrderEventsConsumer {
     @Transactional
     public void onMessage(String message) {
         OrderEventEnvelope envelope = parse(message);
-        if (!processedEvents.markProcessed(envelope.eventId())) {
-            log.debug("duplicate event {} ignored", envelope.eventId());
-            return;
+        MDC.put(MDC_CORRELATION_ID, correlationId(envelope));
+        try {
+            metrics.received(envelope.eventType());
+            if (!processedEvents.markProcessed(envelope.eventId())) {
+                metrics.duplicateIgnored(envelope.eventType());
+                log.debug("duplicate event {} ignored", envelope.eventId());
+                return;
+            }
+            handle(envelope);
+            metrics.applied(envelope.eventType());
+        } finally {
+            MDC.remove(MDC_CORRELATION_ID);
         }
-        handle(envelope);
+    }
+
+    private static String correlationId(OrderEventEnvelope envelope) {
+        if (envelope.correlationId() != null) {
+            return envelope.correlationId().toString();
+        }
+        return envelope.aggregateId() != null ? envelope.aggregateId().toString() : "unknown";
     }
 
     private void handle(OrderEventEnvelope envelope) {

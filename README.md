@@ -5,12 +5,13 @@ omnichannel retail. Every order's state is an immutable, replayable stream of ev
 downstream contexts (inventory, fulfillment, notifications, analytics) integrate through
 versioned events on Kafka, published reliably with a transactional outbox.
 
-> **Project status:** Phase 2 — verified end to end. The architecture is documented under
-> [`docs/`](docs/) (10 ADRs + C4/domain views); the buildable `order-service` and
-> `inventory-consumer` modules implement the event-sourced order core, transactional outbox
-> with a polling relay, the confirmation saga, projections, and an idempotent downstream
-> consumer. **26 tests pass** — 19 unit + 7 Testcontainers integration tests that exercise the
-> real Postgres + Kafka + outbox path (see [Verified with Testcontainers](#verified-with-testcontainers)).
+> **Project status:** Phase 3 — observable and verified end to end. The architecture is documented
+> under [`docs/`](docs/) (10 ADRs + C4/domain views); the buildable `order-service` and
+> `inventory-consumer` modules implement the event-sourced order core, transactional outbox with a
+> polling relay, the confirmation saga, projections, an idempotent downstream consumer, and full
+> observability (Prometheus metrics, structured JSON logs, correlation IDs, health probes — see
+> [Observability](#observability)). **30 tests pass** — 21 unit + 9 Testcontainers integration tests
+> that exercise the real Postgres + Kafka + outbox path (see [Verified with Testcontainers](#verified-with-testcontainers)).
 
 ---
 
@@ -98,9 +99,11 @@ Implementation proceeds in phases so each layer is provable before the next is a
   real Postgres + Kafka + outbox path end to end — order lifecycle, outbox atomicity/reliability,
   projection replay/rebuild, and consumer idempotency. *(Still ahead: API depth, point-in-time
   replay endpoints, fulfillment/return events.)*
-- **Phase 3 — Contract hardening**: Avro + Schema Registry, contract tests, CI compatibility checks.
-- **Phase 4 — Observability**: Micrometer/Prometheus/Grafana, OpenTelemetry tracing,
-  structured logging, health/readiness probes, consumer-lag dashboards.
+- **Phase 3 — Observability** *(done)*: Micrometer → Prometheus metrics for the order lifecycle,
+  saga, outbox, projection, and consumer; structured JSON logging with request/event correlation
+  IDs; liveness/readiness probes; and a provisioned Prometheus + Grafana stack. *(Still ahead:
+  OpenTelemetry/OTLP distributed tracing, consumer-lag panels.)*
+- **Phase 4 — Contract hardening**: Avro + Schema Registry, contract tests, CI compatibility checks.
 - **Phase 5 — Load test + hardening**: Gatling/k6 scenario with published methodology and
   measured numbers; tuning; runbook.
 
@@ -162,6 +165,46 @@ export TESTCONTAINERS_HOST_OVERRIDE="$(colima ls -j | python3 -c 'import sys,jso
 ```
 
 (The build pins the Docker API version to 1.40+ for the test JVM, which modern daemons require.)
+
+## Observability
+
+The platform is instrumented for metrics, structured logs, correlation, and health — viewable
+locally with the Prometheus + Grafana services in `compose.yaml`.
+
+**Metrics (Micrometer → Prometheus)** at `/actuator/prometheus` on each service:
+
+| Metric | Meaning |
+|--------|---------|
+| `aoep_orders_placed_total` / `aoep_orders_confirmed_total` / `aoep_orders_cancelled_total` | Order lifecycle counters. |
+| `aoep_saga_completed_total{outcome=confirmed\|cancelled\|failed}` | Confirmation-saga terminal outcomes. |
+| `aoep_saga_retries_total` | Transient-failure retries inside the saga. |
+| `aoep_outbox_published_total` | Integration events drained from the outbox to Kafka. |
+| `aoep_projection_events_applied_total` / `aoep_projection_rebuilds_total` | Read-model progress and full replays. |
+| `aoep_consumer_events_received_total` / `_duplicate_total` / `_applied_total` (by `type`) | Downstream consume + idempotency (duplicates ignored). |
+
+**Structured JSON logging** — both services log one JSON object per line (Logback +
+logstash-encoder), each carrying a `correlationId`. The order service sets it from an inbound
+`X-Correlation-Id` header (or generates one and echoes it back); the consumer adopts the
+`correlationId` from the integration-event envelope, so an order's logs correlate across both
+services. Read locally with `./gradlew :order-service:bootRun | jq`.
+
+**Health & readiness** — `/actuator/health`, `/actuator/health/liveness`, `/actuator/health/readiness`
+(Kubernetes-style probes).
+
+### Run the monitoring stack locally
+
+```bash
+docker compose up -d                         # includes Prometheus (:9090) and Grafana (:3000)
+./gradlew :order-service:bootRun             # exposes /actuator/prometheus on :8080
+./gradlew :inventory-consumer:bootRun        # exposes /actuator/prometheus on :8081
+# generate some traffic (see the curl below), then:
+#   - raw metrics:  curl -s localhost:8080/actuator/prometheus | grep aoep_
+#   - Grafana:      http://localhost:3000  -> dashboard "Athlete Order Event Platform — Overview"
+#                   (anonymous admin enabled; Prometheus datasource + dashboard auto-provisioned)
+```
+
+What's instrumented is real; **distributed tracing (OpenTelemetry/OTLP spans + a collector) is
+not yet wired** — the correlation ID is the current tracing primitive. That is a documented next step.
 
 ## Local development
 

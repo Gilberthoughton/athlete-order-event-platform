@@ -4,6 +4,10 @@ dependencies {
     implementation("org.springframework.boot:spring-boot-starter-actuator")
     implementation("org.springframework.kafka:spring-kafka")
 
+    // Observability: Prometheus metrics + structured JSON logging.
+    implementation("io.micrometer:micrometer-registry-prometheus")
+    implementation("net.logstash.logback:logstash-logback-encoder:7.4")
+
     implementation("com.fasterxml.jackson.datatype:jackson-datatype-jsr310")
 
     runtimeOnly("org.postgresql:postgresql")

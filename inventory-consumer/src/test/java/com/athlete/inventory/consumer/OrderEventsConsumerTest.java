@@ -1,6 +1,7 @@
 package com.athlete.inventory.consumer;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -27,7 +28,8 @@ class OrderEventsConsumerTest {
     void setUp() {
         processed = new FakeProcessedEventStore();
         fulfillment = new FakeFulfillmentStore();
-        consumer = new OrderEventsConsumer(processed, fulfillment, new ObjectMapper());
+        consumer = new OrderEventsConsumer(processed, fulfillment,
+                new ConsumerMetrics(new SimpleMeterRegistry()), new ObjectMapper());
     }
 
     @Test

@@ -11,8 +11,10 @@ import com.athlete.order.domain.model.OrderLine;
 import com.athlete.order.domain.model.OrderStatus;
 import com.athlete.order.domain.model.Quantity;
 import com.athlete.order.domain.model.Sku;
+import com.athlete.order.infrastructure.observability.OrderMetrics;
 import com.athlete.order.infrastructure.stub.StubInventoryAllocator;
 import com.athlete.order.infrastructure.stub.StubPaymentGateway;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -31,13 +33,17 @@ class OrderConfirmationSagaTest {
     private InMemoryEventStore eventStore;
     private RecordingOutbox outbox;
     private OrderApplicationService orders;
+    private SimpleMeterRegistry registry;
+    private OrderMetrics metrics;
 
     @BeforeEach
     void setUp() {
         eventStore = new InMemoryEventStore();
         outbox = new RecordingOutbox();
+        registry = new SimpleMeterRegistry();
+        metrics = new OrderMetrics(registry);
         orders = new OrderApplicationService(eventStore, outbox, new IntegrationEventMapper(), event -> {
-        });
+        }, metrics);
     }
 
     @Test
@@ -48,6 +54,10 @@ class OrderConfirmationSagaTest {
         assertThat(status(id)).isEqualTo(OrderStatus.CONFIRMED);
         assertThat(outbox.published()).hasSize(1)
                 .first().isInstanceOf(IntegrationEvent.OrderConfirmed.class);
+        // Metrics reflect the lifecycle and the saga outcome.
+        assertThat(registry.counter("aoep.orders.placed").count()).isEqualTo(1.0);
+        assertThat(registry.counter("aoep.orders.confirmed").count()).isEqualTo(1.0);
+        assertThat(registry.counter("aoep.saga.completed", "outcome", "confirmed").count()).isEqualTo(1.0);
     }
 
     @Test
@@ -79,6 +89,7 @@ class OrderConfirmationSagaTest {
         saga(new FlakyPaymentGateway(2), new StubInventoryAllocator()).drive(id);
 
         assertThat(status(id)).isEqualTo(OrderStatus.CONFIRMED);
+        assertThat(registry.counter("aoep.saga.retries").count()).isEqualTo(2.0);
     }
 
     @Test
@@ -98,7 +109,7 @@ class OrderConfirmationSagaTest {
     // ---- helpers ----
 
     private OrderConfirmationSaga saga(PaymentGateway payment, StubInventoryAllocator inventory) {
-        return new OrderConfirmationSaga(orders, payment, inventory);
+        return new OrderConfirmationSaga(orders, payment, inventory, metrics);
     }
 
     private OrderId place(OrderLine... lines) {

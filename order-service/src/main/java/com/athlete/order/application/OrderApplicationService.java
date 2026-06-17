@@ -5,9 +5,13 @@ import com.athlete.order.application.port.EventStore;
 import com.athlete.order.application.port.OutboxRepository;
 import com.athlete.order.domain.Order;
 import com.athlete.order.domain.event.DomainEvent;
+import com.athlete.order.domain.event.DomainEvent.OrderCancelled;
+import com.athlete.order.domain.event.DomainEvent.OrderConfirmed;
+import com.athlete.order.domain.event.DomainEvent.OrderPlaced;
 import com.athlete.order.domain.model.Allocation;
 import com.athlete.order.domain.model.Money;
 import com.athlete.order.domain.model.OrderId;
+import com.athlete.order.infrastructure.observability.OrderMetrics;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -29,15 +33,18 @@ public class OrderApplicationService {
     private final OutboxRepository outbox;
     private final IntegrationEventMapper integrationEventMapper;
     private final ApplicationEventPublisher applicationEvents;
+    private final OrderMetrics metrics;
 
     public OrderApplicationService(EventStore eventStore,
                                    OutboxRepository outbox,
                                    IntegrationEventMapper integrationEventMapper,
-                                   ApplicationEventPublisher applicationEvents) {
+                                   ApplicationEventPublisher applicationEvents,
+                                   OrderMetrics metrics) {
         this.eventStore = eventStore;
         this.outbox = outbox;
         this.integrationEventMapper = integrationEventMapper;
         this.applicationEvents = applicationEvents;
+        this.metrics = metrics;
     }
 
     @Transactional
@@ -109,5 +116,19 @@ public class OrderApplicationService {
             outbox.append(order.id(), integrationEvents);
         }
         order.markEventsCommitted();
+        recordLifecycleMetrics(newEvents);
+    }
+
+    private void recordLifecycleMetrics(List<DomainEvent> newEvents) {
+        for (DomainEvent event : newEvents) {
+            switch (event) {
+                case OrderPlaced e -> metrics.orderPlaced();
+                case OrderConfirmed e -> metrics.orderConfirmed();
+                case OrderCancelled e -> metrics.orderCancelled();
+                default -> {
+                    // other events are not surfaced as lifecycle counters
+                }
+            }
+        }
     }
 }

@@ -5,6 +5,7 @@ import com.athlete.order.domain.event.DomainEvent.OrderCancelled;
 import com.athlete.order.domain.event.DomainEvent.OrderConfirmed;
 import com.athlete.order.domain.event.DomainEvent.OrderPlaced;
 import com.athlete.order.domain.model.OrderId;
+import com.athlete.order.infrastructure.observability.OrderMetrics;
 import com.athlete.order.infrastructure.persistence.EventSerde;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -27,10 +28,12 @@ public class OrderSummaryProjector {
 
     private final JdbcTemplate jdbc;
     private final EventSerde serde;
+    private final OrderMetrics metrics;
 
-    public OrderSummaryProjector(JdbcTemplate jdbc, EventSerde serde) {
+    public OrderSummaryProjector(JdbcTemplate jdbc, EventSerde serde, OrderMetrics metrics) {
         this.jdbc = jdbc;
         this.serde = serde;
+        this.metrics = metrics;
     }
 
     @Scheduled(fixedDelayString = "${aoep.projection.poll-interval-ms:1000}")
@@ -51,9 +54,15 @@ public class OrderSummaryProjector {
                         rs.getTimestamp("occurred_at").toInstant()),
                 checkpoint);
 
+        if (checkpoint == 0 && !rows.isEmpty()) {
+            // Consuming from position 0 with events present is a full (re)build of the read model.
+            metrics.projectionRebuild();
+        }
+
         long lastPosition = checkpoint;
         for (EventRow row : rows) {
             apply(serde.deserialize(row.eventType(), row.payload()), row);
+            metrics.projectionEventApplied();
             lastPosition = row.globalPosition();
         }
         if (lastPosition > checkpoint) {

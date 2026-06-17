@@ -1,5 +1,6 @@
 package com.athlete.order.infrastructure.outbox;
 
+import com.athlete.order.infrastructure.observability.OrderMetrics;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -38,10 +39,12 @@ public class OutboxPollingPublisher {
 
     private final JdbcTemplate jdbc;
     private final KafkaTemplate<String, String> kafka;
+    private final OrderMetrics metrics;
 
-    public OutboxPollingPublisher(JdbcTemplate jdbc, KafkaTemplate<String, String> kafka) {
+    public OutboxPollingPublisher(JdbcTemplate jdbc, KafkaTemplate<String, String> kafka, OrderMetrics metrics) {
         this.jdbc = jdbc;
         this.kafka = kafka;
+        this.metrics = metrics;
     }
 
     @Scheduled(fixedDelayString = "${aoep.outbox.poll-interval-ms:1000}")
@@ -65,6 +68,7 @@ public class OutboxPollingPublisher {
                 return; // stop the batch to preserve per-aggregate ordering
             }
             jdbc.update(MARK_SQL, row.id());
+            metrics.outboxPublished();
         }
     }
 
