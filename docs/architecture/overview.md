@@ -18,17 +18,17 @@ Who and what the platform interacts with.
 
 ```mermaid
 flowchart TB
-    athlete["Athlete\n(customer placing orders)"]
-    csr["Customer Service Rep\n(views/cancels orders)"]
+    athlete["Athlete<br/>(customer placing orders)"]
+    csr["Customer Service Rep<br/>(views/cancels orders)"]
 
     subgraph platform["Athlete Order Event Platform"]
-        aoep["Order service\n(event-sourced)"]
+        aoep["Order service<br/>(event-sourced)"]
     end
 
-    payment["Payment Gateway\n(external)"]
-    inventory["Inventory / Fulfillment\nContext (downstream)"]
-    notifications["Notification Service\n(downstream)"]
-    analytics["Order Analytics\n(downstream read models)"]
+    payment["Payment Gateway<br/>(external)"]
+    inventory["Inventory / Fulfillment<br/>Context (downstream)"]
+    notifications["Notification Service<br/>(downstream)"]
+    analytics["Order Analytics<br/>(downstream read models)"]
 
     athlete -->|places / tracks orders| aoep
     csr -->|queries / cancels| aoep
@@ -51,31 +51,31 @@ The deployable/process-level units.
 
 ```mermaid
 flowchart TB
-    client["API clients\n(web, mobile, CSR tools)"]
+    client["API clients<br/>(web, mobile, CSR tools)"]
 
     subgraph svc["order-service (Spring Boot, JVM)"]
-        api["REST API\n(commands + queries)"]
-        domain["Domain core\n(Order aggregate, command handlers)"]
-        saga["OrderConfirmationSaga\n(process manager + stubs)"]
-        proj["Projection worker\n(builds read models)"]
-        relay["Polling relay\n(outbox -> Kafka)"]
+        api["REST API<br/>(commands + queries)"]
+        domain["Domain core<br/>(Order aggregate, command handlers)"]
+        saga["OrderConfirmationSaga<br/>(process manager + stubs)"]
+        proj["Projection worker<br/>(builds read models)"]
+        relay["Polling relay<br/>(outbox -> Kafka)"]
     end
 
     subgraph cons["inventory-consumer (Spring Boot, JVM)"]
-        listener["Kafka listener\n(idempotent)"]
+        listener["Kafka listener<br/>(idempotent)"]
     end
 
-    pg[("PostgreSQL\norders db: event store + outbox + read models")]
-    pg2[("PostgreSQL\nfulfillment db: inbox + read model")]
-    kafka[["Apache Kafka\norder.events (keyed by orderId)"]]
+    pg[("PostgreSQL<br/>orders db: event store + outbox + read models")]
+    pg2[("PostgreSQL<br/>fulfillment db: inbox + read model")]
+    kafka[["Apache Kafka<br/>order.events (keyed by orderId)"]]
 
     client -->|HTTP/JSON| api
     api --> domain
-    domain -->|append events + outbox\n(one transaction)| pg
+    domain -->|append events + outbox<br/>(one transaction)| pg
     saga -->|payment + inventory steps| domain
     proj -->|read events / upsert read models| pg
-    relay -->|poll undispatched outbox\n(FOR UPDATE SKIP LOCKED)| pg
-    relay -->|publish JSON events| kafka
+    relay -->|poll undispatched outbox<br/>(FOR UPDATE SKIP LOCKED)| pg
+    relay -->|publish Avro events| kafka
     kafka -->|consume| listener
     listener -->|dedupe + upsert| pg2
 ```
@@ -92,8 +92,10 @@ Notes:
   upgrade behind the same seam ([ADR 0002](../adr/0002-transactional-outbox-for-publishing.md)).
 - **PostgreSQL** holds three logical concerns kept clearly separated: the **event store**
   (truth), the **outbox** (publishing), and **read models / projections** (queries — CQRS).
-- **Integration events are JSON** in this phase for a registry-free boot; Avro + Schema
-  Registry is the documented target ([ADR 0004](../adr/0004-avro-schema-registry-backward-compat.md)).
+- **Integration events are Avro**, governed by the Confluent Schema Registry with `BACKWARD`
+  compatibility ([ADR 0004](../adr/0004-avro-schema-registry-backward-compat.md)). The relay
+  translates the stored outbox envelope to Avro at publish time, so the registry stays out of
+  the order transaction.
 
 ---
 
@@ -101,12 +103,12 @@ Notes:
 
 ```mermaid
 flowchart LR
-    controller["CommandController\n(REST, expected-version / If-Match)"]
-    appsvc["OrderApplicationService\n(load -> decide -> append)"]
+    controller["CommandController<br/>(REST, expected-version / If-Match)"]
+    appsvc["OrderApplicationService<br/>(load -> decide -> append)"]
     repo["EventSourcedOrderRepository"]
-    agg["Order aggregate\n(pure decision logic)"]
-    store["EventStore\n(append + load by aggregateId)"]
-    outbox["OutboxWriter\n(integration-event translation)"]
+    agg["Order aggregate<br/>(pure decision logic)"]
+    store["EventStore<br/>(append + load by aggregateId)"]
+    outbox["OutboxWriter<br/>(integration-event translation)"]
 
     controller --> appsvc
     appsvc -->|load history| repo
@@ -114,7 +116,7 @@ flowchart LR
     repo -->|rehydrate| agg
     appsvc -->|handle command| agg
     agg -->|new domain events| appsvc
-    appsvc -->|append events + write outbox\nSAME TRANSACTION| repo
+    appsvc -->|append events + write outbox<br/>SAME TRANSACTION| repo
     repo --> store
     repo --> outbox
 ```
@@ -146,16 +148,16 @@ or to a point in time).
 | **Correctness under concurrency** | Optimistic concurrency on `(aggregate_id, sequence_no)` ([ADR 0005](../adr/0005-optimistic-concurrency-control.md)). |
 | **No lost events** | Transactional outbox eliminates dual writes ([ADR 0002](../adr/0002-transactional-outbox-for-publishing.md)). |
 | **Loose coupling** | Public integration events distinct from internal domain events ([ADR 0003](../adr/0003-separate-domain-and-integration-events.md)). |
-| **Safe evolution** | Avro + Schema Registry, BACKWARD compatibility, upcasters ([ADR 0004](../adr/0004-avro-schema-registry-backward-compat.md)). |
+| **Safe evolution** | Avro + Schema Registry, BACKWARD compatibility, additive schema changes ([ADR 0004](../adr/0004-avro-schema-registry-backward-compat.md)). |
 | **Throughput / scale** | Per-`orderId` partitioning ([ADR 0007](../adr/0007-partition-by-order-id.md)); parallel consumers; read/write separation (CQRS). |
 | **Resilience** | At-least-once delivery + idempotent consumers ([ADR 0008](../adr/0008-idempotent-consumers.md)); downstream contexts decoupled. |
-| **Observability** | Correlation/causation IDs on every event; Micrometer→Prometheus metrics; OpenTelemetry traces; consumer-lag dashboards. |
+| **Observability** | Correlation/causation IDs on every event; Micrometer→Prometheus metrics; structured JSON logs (distributed tracing is a documented next step). |
 
-## High-throughput strategy (and how we will prove it)
+## High-throughput strategy (and how it will be proven)
 
-The "high-throughput order processing" goal is backed by a **measured** load test, not a
-claim. Strategy: batch event appends, size partition count for peak with headroom, scale
-consumers within a consumer group, and keep the write path free of synchronous downstream
-calls. Phase 5 runs a Gatling/k6 scenario and publishes the methodology and real numbers
-(throughput, p50/p99 latency, consumer lag under load) in the README. A believable, reproducible
-number beats an impressive fictional one.
+The "high-throughput order processing" goal is a **design target**, not yet a measured result.
+The strategy: batch event appends, size partition count for peak with headroom, scale consumers
+within a consumer group, and keep the write path free of synchronous downstream calls. Phase 5
+will run a Gatling/k6 scenario and publish the methodology and real numbers (throughput, p50/p99
+latency, consumer lag under load). A believable, reproducible number beats an impressive fictional
+one — so until that load test exists, no throughput figure is claimed.

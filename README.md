@@ -16,30 +16,36 @@ versioned events on Kafka, published reliably with a transactional outbox.
 
 ---
 
-## Why this exists
+## Why this project exists
 
-Order management is the hardest, highest-stakes workflow in commerce: it touches money,
-inventory, and customer trust, under bursty seasonal load, across multiple fulfillment
-channels. This platform models that domain the way a production retail system must:
+Order management is the highest-stakes workflow in omnichannel retail: it moves money, commits
+inventory, and carries customer trust — under bursty, seasonal load across many fulfillment
+channels (ship, BOPIS, ship-from-store). This repository is a focused, production-shaped reference
+for that problem, built to demonstrate three things an enterprise commerce team cares about:
 
-- **Immutable order history** — an append-only event store is the system of record; nothing
-  is ever updated in place, so the full history of every order is permanent and auditable.
-- **Replay** — current state (an aggregate, or a read model) is *derived* by folding events,
-  so any view can be rebuilt, and any order can be reconstructed as it was at a point in time.
-- **Event-driven integration** — other services react to order events asynchronously rather
-  than being called synchronously, keeping the order service available under downstream failure.
-- **High throughput** — per-order partitioning, read/write separation (CQRS), and idempotent
-  consumers allow horizontal scaling; throughput is validated with a published load test.
+- **A trustworthy order lifecycle.** The order is event-sourced: an append-only, immutable history
+  is the system of record, every state change is auditable, and any view can be rebuilt by replaying
+  events — even reconstructing an order as it was at a point in time.
+- **Event-driven integration, done safely.** Downstream contexts react to versioned events over
+  Kafka — never synchronous calls — published with a transactional outbox (no dual-write data loss)
+  and governed by a schema registry so contracts evolve without breaking consumers.
+- **Reliability under failure.** At-least-once delivery with idempotent consumers, optimistic
+  concurrency, a saga with compensation, and per-order ordering keep the system correct when
+  payments, inventory, or downstream services misbehave.
+
+It is a reference implementation, not a production deployment — the
+[Verified with Testcontainers](#verified-with-testcontainers) section states exactly what is
+proven against real infrastructure versus simulated.
 
 ## Architecture at a glance
 
 ```mermaid
 flowchart LR
-    client["Clients\n(web / mobile / CSR)"] -->|commands + queries| api["Order Service\n(Spring Boot)"]
-    api -->|append events + outbox\n(one transaction)| pg[("PostgreSQL\nevent store · outbox · read models")]
-    relay["Relay (outbox -> Kafka)"] --> kafka[["Kafka\nintegration events"]]
+    client["Clients<br/>(web / mobile / CSR)"] -->|commands + queries| api["Order Service<br/>(Spring Boot)"]
+    api -->|append events + outbox<br/>(one transaction)| pg[("PostgreSQL<br/>event store · outbox · read models")]
+    relay["Relay (outbox -> Kafka)"] --> kafka[["Kafka<br/>integration events"]]
     pg --> relay
-    kafka --> downstream["Inventory · Fulfillment\nNotifications · Analytics"]
+    kafka --> downstream["Inventory · Fulfillment<br/>Notifications · Analytics"]
     kafka --- registry["Schema Registry (Avro)"]
 ```
 
@@ -77,22 +83,21 @@ that enforce each guarantee are in [`docs/architecture/data-model.md`](docs/arch
 
 | Technology | Role | Rationale |
 |------------|------|-----------|
-| **Java 21 + Spring Boot 3** | Order service | Mature JVM concurrency, virtual threads, first-class Kafka/JPA/observability support. |
+| **Java 21 + Spring Boot 3** | Order service | Mature JVM concurrency, first-class Kafka/JDBC/observability support. |
 | **PostgreSQL** | Event store, outbox, read models | ACID appends, unique-constraint concurrency control, partitioning, operational familiarity. |
 | **Apache Kafka (KRaft)** | Integration backbone | Durable, partitioned, replayable transport for the public event contract; single-node KRaft (no ZooKeeper) for a light local boot. |
 | **Avro + Confluent Schema Registry** | Wire contract + governance | Integration events are Avro, governed by the registry with `BACKWARD` compatibility; schemas evolve safely and breaking changes fail the build ([ADR 0004](docs/adr/0004-avro-schema-registry-backward-compat.md), [Event Contract Governance](#event-contract-governance)). |
 | **Flyway** | Schema migrations | Versioned, reviewable database changes. |
 | **Docker / Docker Compose** | Local orchestration | `docker compose up` boots the full stack for development and the demo. |
 | **Testcontainers** | Integration testing | Tests run against real Postgres and Kafka, not mocks. |
-| **Micrometer · Prometheus · Grafana · OpenTelemetry** | Observability | Metrics, dashboards, and distributed traces correlated with event IDs. |
-| **Gatling / k6** | Load testing | Reproducible throughput and latency measurement. |
+| **Micrometer · Prometheus · Grafana** | Observability | Domain metrics, dashboards, structured JSON logs, and request/event correlation IDs (distributed tracing is a documented next step, not yet wired). |
 
 ## Roadmap
 
 Implementation proceeds in phases so each layer is provable before the next is added:
 
 - **Phase 0 — Foundations** *(done)*: 10 ADRs, C4 + domain docs, event catalog, data model.
-- **Phase 1 — Event-sourced core + event-driven slice** *(current)*: `Order` aggregate,
+- **Phase 1 — Event-sourced core + event-driven slice** *(done)*: `Order` aggregate,
   Postgres event store with optimistic concurrency, transactional outbox + polling relay,
   `OrderConfirmationSaga`, read-model projection, command/query REST API, and a separate
   idempotent `inventory-consumer` — with Given-When-Then and fake-driven tests.
@@ -147,10 +152,9 @@ and meet at the Kafka wire contract — the realistic way to test two separately
 - **Simulated (stubs):** the payment gateway and inventory allocator are deterministic in-process
   stubs (`StubPaymentGateway`, `StubInventoryAllocator`) — the saga orchestration, retry, and
   compensation around them are real; the external systems are not.
-- **Not yet built (see roadmap):** Avro + Schema Registry (integration events are JSON for now),
-  observability (metrics/traces/dashboards), and a load test with measured throughput. The relay
-  is a polling publisher; Debezium CDC is documented as the production upgrade. This is a
-  reference implementation, not a production deployment.
+- **Not yet built (see roadmap):** a load test with measured throughput, and distributed tracing
+  (OpenTelemetry/OTLP spans). The relay is a polling publisher; Debezium CDC is documented as the
+  production upgrade. This is a reference implementation, not a production deployment.
 
 ### Running the integration tests
 
@@ -289,14 +293,23 @@ curl -s localhost:8080/api/orders -H 'content-type: application/json' -d '{
 ```
 athlete-order-event-platform/
 ├── docs/                          # 10 ADRs + C4 / domain / event-catalog / data-model
-├── compose.yaml                   # PostgreSQL + Kafka (KRaft)
+├── compose.yaml                   # PostgreSQL + Kafka (KRaft) + Schema Registry + Prometheus + Grafana
+├── monitoring/                    # Prometheus scrape config + Grafana provisioning & dashboard
 ├── settings.gradle.kts            # two modules
 ├── order-service/                 # event-sourced order lifecycle (Spring Boot)
-│   └── src/main/java/com/athlete/order/
-│       ├── domain/                # Order aggregate, value objects, domain events (pure, no framework)
-│       ├── application/           # command handlers, OrderConfirmationSaga, ports
-│       ├── infrastructure/        # JDBC event store + outbox, polling relay, projection, Kafka, stubs
-│       └── api/                   # REST controllers (commands + queries)
-└── inventory-consumer/            # idempotent downstream consumer + read model (Spring Boot)
-    └── src/main/java/com/athlete/inventory/
+│   └── src/main/
+│       ├── avro/                  # order-integration-event.avsc (the published wire contract)
+│       └── java/com/athlete/order/
+│           ├── domain/            # Order aggregate, value objects, domain events (pure, no framework)
+│           ├── application/       # command handlers, OrderConfirmationSaga, ports
+│           ├── infrastructure/    # JDBC event store + outbox, polling relay, projection, Kafka/Avro, stubs
+│           └── api/               # REST controllers (commands + queries)
+└── inventory-consumer/            # idempotent downstream Avro consumer + read model (Spring Boot)
+    └── src/main/
+        ├── avro/                  # consumer-owned copy of the contract
+        └── java/com/athlete/inventory/
 ```
+
+## License
+
+Released under the [MIT License](LICENSE).
