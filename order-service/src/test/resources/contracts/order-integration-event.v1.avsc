@@ -1,0 +1,18 @@
+{
+  "type": "record",
+  "name": "OrderIntegrationEvent",
+  "namespace": "com.athlete.order.contracts.avro",
+  "doc": "Public integration event for the order lifecycle, published to the order.events topic. A flat envelope: stable metadata plus an eventType discriminator and nullable, type-specific fields. New fields MUST be nullable with a default to preserve BACKWARD compatibility (see ADR 0004).",
+  "fields": [
+    {"name": "eventId", "type": "string", "doc": "Globally unique event id; basis for consumer idempotency"},
+    {"name": "eventType", "type": {"type": "enum", "name": "OrderEventType", "symbols": ["ORDER_CONFIRMED", "ORDER_CANCELLED"]}, "doc": "Discriminator for the event kind"},
+    {"name": "aggregateId", "type": "string", "doc": "The orderId; also the Kafka partition key"},
+    {"name": "correlationId", "type": "string", "doc": "Groups all events of one business flow"},
+    {"name": "occurredAt", "type": "long", "doc": "When the fact happened, epoch milliseconds (UTC)"},
+    {"name": "schemaVersion", "type": "int", "default": 1, "doc": "Producer-declared contract version"},
+    {"name": "athleteId", "type": ["null", "string"], "default": null, "doc": "ORDER_CONFIRMED: the athlete who owns the order"},
+    {"name": "totalAmount", "type": ["null", "string"], "default": null, "doc": "ORDER_CONFIRMED: order total as a plain decimal string"},
+    {"name": "currency", "type": ["null", "string"], "default": null, "doc": "ORDER_CONFIRMED: ISO-4217 currency code"},
+    {"name": "reasonCode", "type": ["null", "string"], "default": null, "doc": "ORDER_CANCELLED: machine-readable cancellation reason"}
+  ]
+}
