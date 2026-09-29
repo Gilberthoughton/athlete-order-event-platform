@@ -4,6 +4,7 @@ import com.athlete.order.application.contract.IntegrationEvent;
 import com.athlete.order.application.port.OutboxRepository;
 import com.athlete.order.domain.model.OrderId;
 import com.athlete.order.infrastructure.config.KafkaTopics;
+import com.athlete.order.infrastructure.observability.CorrelationContext;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -43,15 +44,35 @@ public class JdbcOutboxRepository implements OutboxRepository {
         Instant now = Instant.now();
         for (IntegrationEvent event : events) {
             UUID eventId = UUID.randomUUID();
+            // The id that identifies this business flow in the logs. Falls back to the orderId when
+            // the write happens outside a correlated unit of work (e.g. a background task).
+            // correlation_id is a UUID column, so this must be bound as a UUID, not a String.
+            UUID correlationId = currentCorrelationId(orderId);
             jdbc.update(INSERT_SQL,
                     eventId,
                     orderId.value(),
                     KafkaTopics.ORDER_EVENTS,
                     event.eventType(),
                     event.schemaVersion(),
-                    envelope(eventId, orderId, event, now),
-                    orderId.value(),
+                    envelope(eventId, orderId, event, now, correlationId.toString()),
+                    correlationId,
                     Timestamp.from(now));
+        }
+    }
+
+    /**
+     * The correlation id established for the work in flight, or the order id when there is none
+     * (or it is not a UUID, which the persisted column requires).
+     */
+    private static UUID currentCorrelationId(OrderId orderId) {
+        String current = CorrelationContext.currentOrNull();
+        if (current == null) {
+            return orderId.value();
+        }
+        try {
+            return UUID.fromString(current);
+        } catch (IllegalArgumentException notAUuid) {
+            return orderId.value();
         }
     }
 
@@ -60,13 +81,14 @@ public class JdbcOutboxRepository implements OutboxRepository {
      * record. The relay translates this to {@link com.athlete.order.contracts.avro.OrderIntegrationEvent}
      * at publish time, keeping Avro/registry concerns out of the order transaction.
      */
-    private String envelope(UUID eventId, OrderId orderId, IntegrationEvent event, Instant fallbackTime) {
+    private String envelope(UUID eventId, OrderId orderId, IntegrationEvent event, Instant fallbackTime,
+                            String correlationId) {
         ObjectNode root = mapper.createObjectNode();
         root.put("eventId", eventId.toString());
         root.put("eventType", event.eventType());
         root.put("schemaVersion", event.schemaVersion());
         root.put("aggregateId", orderId.value().toString());
-        root.put("correlationId", orderId.value().toString());
+        root.put("correlationId", correlationId);
         switch (event) {
             case IntegrationEvent.OrderConfirmed e -> {
                 root.put("occurredAt", e.confirmedAt().toEpochMilli());
