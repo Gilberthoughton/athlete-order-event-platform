@@ -7,12 +7,16 @@ import com.athlete.order.domain.event.DomainEvent.OrderPlaced;
 import com.athlete.order.domain.model.OrderId;
 import com.athlete.order.infrastructure.observability.OrderMetrics;
 import com.athlete.order.infrastructure.persistence.EventSerde;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.sql.Timestamp;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 
@@ -26,20 +30,30 @@ public class OrderSummaryProjector {
 
     private static final String PROJECTION = "order_summary";
 
+    private static final Logger log = LoggerFactory.getLogger(OrderSummaryProjector.class);
+
     private final JdbcTemplate jdbc;
     private final EventSerde serde;
     private final OrderMetrics metrics;
+    private final Duration gapGrace;
 
-    public OrderSummaryProjector(JdbcTemplate jdbc, EventSerde serde, OrderMetrics metrics) {
+    public OrderSummaryProjector(
+            JdbcTemplate jdbc,
+            EventSerde serde,
+            OrderMetrics metrics,
+            @Value("${aoep.projection.gap-grace-ms:30000}") long gapGraceMs) {
         this.jdbc = jdbc;
         this.serde = serde;
         this.metrics = metrics;
+        // Must exceed the longest write transaction, so a position is only declared abandoned
+        // once no in-flight transaction could still commit into it.
+        this.gapGrace = Duration.ofMillis(gapGraceMs);
     }
 
     @Scheduled(fixedDelayString = "${aoep.projection.poll-interval-ms:1000}")
     @Transactional
     public void project() {
-        long checkpoint = currentCheckpoint();
+        Checkpoint checkpoint = currentCheckpoint();
         List<EventRow> rows = jdbc.query("""
                 SELECT global_position, event_type, payload, occurred_at
                 FROM events
@@ -52,22 +66,57 @@ public class OrderSummaryProjector {
                         rs.getString("event_type"),
                         rs.getString("payload"),
                         rs.getTimestamp("occurred_at").toInstant()),
-                checkpoint);
+                checkpoint.position());
 
-        if (checkpoint == 0 && !rows.isEmpty()) {
+        if (rows.isEmpty()) {
+            // Nothing visible beyond the checkpoint, so no gap is observable either.
+            if (checkpoint.hasPendingGap()) {
+                saveCheckpoint(checkpoint.position(), null, null);
+            }
+            return;
+        }
+
+        if (checkpoint.position() == 0) {
             // Consuming from position 0 with events present is a full (re)build of the read model.
             metrics.projectionRebuild();
         }
 
-        long lastPosition = checkpoint;
+        // Apply only the contiguous run starting at checkpoint+1. `global_position` is assigned
+        // when a row is inserted rather than when its transaction commits, so a missing position
+        // may still belong to a transaction that has not committed yet. Stepping over it would
+        // skip that event permanently once the checkpoint moved past it.
+        long expected = checkpoint.position() + 1;
+        long lastApplied = checkpoint.position();
+        Long gapAt = null;
         for (EventRow row : rows) {
+            if (row.globalPosition() != expected) {
+                gapAt = expected;
+                break;
+            }
             apply(serde.deserialize(row.eventType(), row.payload()), row);
             metrics.projectionEventApplied();
-            lastPosition = row.globalPosition();
+            lastApplied = row.globalPosition();
+            expected++;
         }
-        if (lastPosition > checkpoint) {
-            saveCheckpoint(lastPosition);
+
+        if (gapAt == null) {
+            if (lastApplied > checkpoint.position()) {
+                saveCheckpoint(lastApplied, null, null);
+            }
+            return;
         }
+
+        if (checkpoint.isPendingGapExpired(gapAt, gapGrace, Instant.now())) {
+            // The position was consumed by a transaction that rolled back, so it is never
+            // coming. Step over it, otherwise the projection stalls forever.
+            log.warn("Projection '{}' skipping position {} — no event committed there within {}",
+                    PROJECTION, gapAt, gapGrace);
+            saveCheckpoint(gapAt, null, null);
+            return;
+        }
+
+        Instant firstSeen = checkpoint.isSameGap(gapAt) ? checkpoint.gapFirstSeen() : Instant.now();
+        saveCheckpoint(lastApplied, gapAt, firstSeen);
     }
 
     private void apply(DomainEvent event, EventRow row) {
@@ -104,23 +153,62 @@ public class OrderSummaryProjector {
                 status, Timestamp.from(row.occurredAt()), row.globalPosition(), orderId.value());
     }
 
-    private long currentCheckpoint() {
-        Long position = jdbc.query(
-                "SELECT last_position FROM projection_checkpoints WHERE projection_name = ?",
-                rs -> rs.next() ? rs.getLong(1) : null,
+    private Checkpoint currentCheckpoint() {
+        Checkpoint checkpoint = jdbc.query("""
+                SELECT last_position, pending_gap_position, pending_gap_first_seen
+                FROM projection_checkpoints
+                WHERE projection_name = ?
+                """,
+                rs -> {
+                    if (!rs.next()) {
+                        return null;
+                    }
+                    long position = rs.getLong("last_position");
+                    long gap = rs.getLong("pending_gap_position");
+                    Long gapPosition = rs.wasNull() ? null : gap;
+                    Timestamp firstSeen = rs.getTimestamp("pending_gap_first_seen");
+                    return new Checkpoint(position, gapPosition,
+                            firstSeen == null ? null : firstSeen.toInstant());
+                },
                 PROJECTION);
-        return position == null ? 0L : position;
+        return checkpoint == null ? new Checkpoint(0L, null, null) : checkpoint;
     }
 
-    private void saveCheckpoint(long position) {
+    private void saveCheckpoint(long position, Long gapPosition, Instant gapFirstSeen) {
         jdbc.update("""
-                INSERT INTO projection_checkpoints (projection_name, last_position, updated_at)
-                VALUES (?, ?, now())
+                INSERT INTO projection_checkpoints
+                    (projection_name, last_position, updated_at,
+                     pending_gap_position, pending_gap_first_seen)
+                VALUES (?, ?, now(), ?, ?)
                 ON CONFLICT (projection_name)
-                DO UPDATE SET last_position = EXCLUDED.last_position, updated_at = now()
-                """, PROJECTION, position);
+                DO UPDATE SET last_position = EXCLUDED.last_position,
+                              updated_at = now(),
+                              pending_gap_position = EXCLUDED.pending_gap_position,
+                              pending_gap_first_seen = EXCLUDED.pending_gap_first_seen
+                """,
+                PROJECTION, position, gapPosition,
+                gapFirstSeen == null ? null : Timestamp.from(gapFirstSeen));
     }
 
     private record EventRow(long globalPosition, String eventType, String payload, Instant occurredAt) {
+    }
+
+    /**
+     * Projection progress: the last contiguous position applied, plus the position the stream is
+     * currently waiting on (if any) and when that wait began.
+     */
+    private record Checkpoint(long position, Long gapPosition, Instant gapFirstSeen) {
+
+        boolean hasPendingGap() {
+            return gapPosition != null;
+        }
+
+        boolean isSameGap(long candidate) {
+            return gapPosition != null && gapPosition == candidate && gapFirstSeen != null;
+        }
+
+        boolean isPendingGapExpired(long candidate, Duration grace, Instant now) {
+            return isSameGap(candidate) && !now.isBefore(gapFirstSeen.plus(grace));
+        }
     }
 }
