@@ -9,7 +9,7 @@ import java.time.Instant;
 /**
  * Public integration events — the contract published to Kafka and consumed by other contexts
  * (ADR 0003). Deliberately coarse-grained and versioned; distinct from internal domain events.
- * Serialized as a self-describing JSON envelope in this phase; Avro + Schema Registry is the
+ * Serialized as a self-describing JSON envelope in the outbox; Avro + Schema Registry is the
  * documented target (ADR 0004).
  */
 public sealed interface IntegrationEvent

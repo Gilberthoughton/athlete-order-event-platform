@@ -11,7 +11,7 @@ versioned events on Kafka, published reliably with a transactional outbox.
 > polling relay, the confirmation saga, projections, an idempotent **Avro** consumer, **Schema-Registry
 > governed event contracts** (see [Event Contract Governance](#event-contract-governance)), and full
 > observability (Prometheus metrics, structured JSON logs, correlation IDs, health probes — see
-> [Observability](#observability)). **34 tests pass** — 25 unit + 9 Testcontainers integration tests
+> [Observability](#observability)). **40 tests pass** — 27 unit + 13 Testcontainers integration tests
 > that exercise the real Postgres + Kafka + Avro + outbox path (see [Verified with Testcontainers](#verified-with-testcontainers)).
 
 ---
@@ -203,6 +203,11 @@ so a registry outage can never block order processing (the outbox write stays re
 | Remove/rename an enum symbol in use | ❌ breaking |
 
 **Fail fast in CI.** [`SchemaCompatibilityTest`](order-service/src/test/java/com/athlete/order/contracts/SchemaCompatibilityTest.java)
+compares the current contract against a committed baseline of the published schema
+([`order-integration-event.v1.avsc`](order-service/src/test/resources/contracts/order-integration-event.v1.avsc))
+and fails the build on a breaking change. The check runs on every push via
+[GitHub Actions](.github/workflows/ci.yml). It is a build-time Avro check; it does not talk to a
+running registry. It also
 asserts the BACKWARD rule with Avro's `SchemaCompatibility` API (allowed change → compatible; required
 field with no default → incompatible) and that the generated contract is self-compatible. A breaking
 edit fails `./gradlew test` before it can reach a running registry.
@@ -255,7 +260,7 @@ services. Read locally with `./gradlew :order-service:bootRun | jq`.
 ```bash
 docker compose up -d                         # includes Prometheus (:9090) and Grafana (:3000)
 ./gradlew :order-service:bootRun             # exposes /actuator/prometheus on :8080
-./gradlew :inventory-consumer:bootRun        # exposes /actuator/prometheus on :8081
+./gradlew :inventory-consumer:bootRun        # exposes /actuator/prometheus on :8082
 # generate some traffic (see the curl below), then:
 #   - raw metrics:  curl -s localhost:8080/actuator/prometheus | grep aoep_
 #   - Grafana:      http://localhost:3000  -> dashboard "Athlete Order Event Platform — Overview"
@@ -270,7 +275,7 @@ not yet wired** — the correlation ID is the current tracing primitive. That is
 ```bash
 docker compose up -d                       # PostgreSQL + Kafka (KRaft) + Schema Registry (:8081)
 ./gradlew :order-service:bootRun           # start the order service        (http://localhost:8080)
-./gradlew :inventory-consumer:bootRun      # start the downstream consumer   (http://localhost:8081)
+./gradlew :inventory-consumer:bootRun      # start the downstream consumer   (http://localhost:8082)
 ./gradlew test                             # unit + fake-driven tests across both modules
 ```
 
@@ -285,7 +290,7 @@ curl -s localhost:8080/api/orders -H 'content-type: application/json' -d '{
 # -> 201 Created with an orderId; GET /api/orders/{id} shows status transition to CONFIRMED.
 # Failure/compensation paths: an order total >= $5,000 is declined by the payment stub, and any
 # SKU prefixed OOS- fails inventory allocation (voiding the payment hold) -> order CANCELLED.
-# The inventory-consumer's read model reflects the outcome at GET localhost:8081/api/fulfillment/orders.
+# The inventory-consumer's read model reflects the outcome at GET localhost:8082/api/fulfillment/orders.
 ```
 
 ## Project structure

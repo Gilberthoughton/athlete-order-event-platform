@@ -48,8 +48,8 @@ retail** — the realism is part of the design.
 | **Projection / read model** | A query-optimized view derived from events; eventually consistent; rebuildable by replay. |
 | **Replay** | Re-deriving state (an aggregate or a projection) by folding events — from the beginning or to a point in time. |
 | **Outbox** | The table written in the same transaction as events, from which the relay publishes to Kafka. |
-| **Upcaster** | A function that transforms an older on-the-wire event version into the current in-memory shape. |
-| **Correlation ID / Causation ID** | Metadata linking events: *correlation* groups all events of one business flow; *causation* points to the specific event/command that directly caused this one. |
+| **Upcaster** | _(planned)_ A function that transforms an older on-the-wire event version into the current in-memory shape. Not implemented; no reader branches on `schemaVersion`. |
+| **Correlation ID / Causation ID** | Metadata linking events: *correlation* groups all events of one business flow; *causation* points to the specific event/command that directly caused this one (reserved; not yet written). |
 | **Idempotency key** | A client-supplied (commands) or `eventId`-based (consumers) key ensuring repeated processing has no extra effect. |
 
 ## Naming conventions

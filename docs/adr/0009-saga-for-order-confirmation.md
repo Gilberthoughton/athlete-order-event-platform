@@ -55,7 +55,7 @@ real gateways is an adapter swap; the saga and aggregate are untouched.
 The saga reacts to `OrderPlaced` via an **after-commit application hook** (Spring
 `@TransactionalEventListener(AFTER_COMMIT)`), so it runs only once the order is durably
 persisted. This in-process trigger is sufficient for the reference implementation; a crash
-between commit and saga execution is recovered by a periodic **reconciliation sweep** that
+between commit and saga execution would be recovered by a periodic **reconciliation sweep** that
 re-drives orders left in a non-terminal pre-confirmation state. A fully durable,
 broker-backed trigger is a later-phase hardening, isolated to the trigger seam.
 
@@ -70,7 +70,9 @@ broker-backed trigger is a later-phase hardening, isolated to the trigger seam.
 **Negative / trade-offs**
 
 - A process manager is additional moving machinery and its own state to reason about.
-- The in-process after-commit trigger needs the reconciliation sweep to be crash-safe.
+- The in-process after-commit trigger needs the reconciliation sweep to be crash-safe. **The sweep is
+  not implemented**: an order whose process dies between commit and saga execution currently stays in
+  `AWAITING_CONFIRMATION` until it is re-driven manually.
 
 ## Alternatives considered
 

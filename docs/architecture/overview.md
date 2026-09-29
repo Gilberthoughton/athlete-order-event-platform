@@ -151,7 +151,7 @@ or to a point in time).
 | **Safe evolution** | Avro + Schema Registry, BACKWARD compatibility, additive schema changes ([ADR 0004](../adr/0004-avro-schema-registry-backward-compat.md)). |
 | **Throughput / scale** | Per-`orderId` partitioning ([ADR 0007](../adr/0007-partition-by-order-id.md)); parallel consumers; read/write separation (CQRS). |
 | **Resilience** | At-least-once delivery + idempotent consumers ([ADR 0008](../adr/0008-idempotent-consumers.md)); downstream contexts decoupled. |
-| **Observability** | Correlation/causation IDs on every event; Micrometer→Prometheus metrics; structured JSON logs (distributed tracing is a documented next step). |
+| **Observability** | Correlation IDs on every event (causation reserved, not written); Micrometer→Prometheus metrics; structured JSON logs (distributed tracing is a documented next step). |
 
 ## High-throughput strategy (and how it will be proven)
 

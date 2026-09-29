@@ -45,12 +45,14 @@ the *old* schema. In practice this constrains evolution to safe changes:
 - ❌ Rename a field, change its type, or add a required field without a default (breaking — requires a new event version/subject).
 
 For changes that cannot be made backward-compatible, we introduce a **new event version**
-(e.g. `OrderConfirmed.v2`) and run both until consumers migrate. **Upcasters** translate old
+(e.g. `OrderConfirmed.v2`) and run both until consumers migrate. **Upcasters** (planned, not
+implemented) would translate old
 on-the-wire versions into the current in-memory representation when reading the internal
 event store, so domain code only ever deals with the latest shape.
 
 Every event also carries a **metadata envelope** (`eventId`, `eventType`, `schemaVersion`,
-`occurredAt`, `correlationId`, `causationId`) — see the [event catalog](../architecture/event-catalog.md).
+`occurredAt`, `correlationId`) — see the [event catalog](../architecture/event-catalog.md).
+`causationId` is reserved on the event store but is not part of the Avro contract and is not written.
 
 ## Consequences
 

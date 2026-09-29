@@ -116,7 +116,7 @@ public final class Order {
         }
         if (status == OrderStatus.CONFIRMED) {
             throw new InvalidOrderStateException(
-                    "a confirmed order cannot be cancelled in this phase; a return flow arrives in Phase 2");
+                    "a confirmed order cannot be cancelled; returns are handled by a separate flow that is not built");
         }
         raise(new OrderCancelled(id, reasonCode, Instant.now()));
     }

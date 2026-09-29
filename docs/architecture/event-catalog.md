@@ -1,7 +1,9 @@
 # Event Catalog
 
-The canonical list of events in the platform, split into **internal domain events** (event
-store only) and **public integration events** (Kafka contract). The split is mandated by
+The event model for the platform, split into **internal domain events** (event store only) and
+**public integration events** (Kafka contract). Entries marked _(planned)_ are part of the design
+and are **not implemented**; the code currently raises 7 domain events and publishes 2 integration
+events. The split is mandated by
 [ADR 0003](../adr/0003-separate-domain-and-integration-events.md). All events share a common
 metadata envelope.
 
@@ -11,14 +13,15 @@ metadata envelope.
 |-------|------|---------|
 | `eventId` | UUID | Globally unique id; the basis for consumer idempotency ([ADR 0008](../adr/0008-idempotent-consumers.md)). |
 | `eventType` | string | e.g. `OrderPlaced`. |
-| `schemaVersion` | int | Event schema version for evolution/upcasting ([ADR 0004](../adr/0004-avro-schema-registry-backward-compat.md)). |
+| `schemaVersion` | int | Producer-declared contract version, stored for future evolution. No upcasting is implemented; readers do not branch on it ([ADR 0004](../adr/0004-avro-schema-registry-backward-compat.md)). |
 | `aggregateId` | UUID | The `orderId` this event belongs to. |
 | `sequenceNo` | long | Monotonic position within the aggregate; the concurrency token ([ADR 0005](../adr/0005-optimistic-concurrency-control.md)). |
 | `occurredAt` | timestamp (UTC) | When the fact happened. |
 | `correlationId` | UUID | Groups all events in one business flow. |
-| `causationId` | UUID | The id of the command/event that directly caused this one. |
+| `causationId` | UUID | _(planned)_ The id of the command/event that directly caused this one. The column exists on the event store; nothing writes it and it is not part of the Avro contract. |
 
-> Correlation and causation IDs turn the event log into a traceable causal graph — invaluable
+> Correlation IDs are populated end to end today; causation is reserved but not yet written.
+> Together they would turn the event log into a traceable causal graph — invaluable
 > for debugging distributed flows and a strong signal of production event-driven experience.
 
 ---
@@ -49,7 +52,7 @@ These are fine-grained and free to evolve with the model. They are **never** pub
 
 Coarse-grained, intentionally designed, and **versioned**. These are what other contexts may
 depend on. Topic naming: `order.events.<eventType>` (or a single keyed `order.events` topic;
-finalized in Phase 3). All keyed by `orderId` ([ADR 0007](../adr/0007-partition-by-order-id.md)).
+one keyed topic, `order.events`). All keyed by `orderId` ([ADR 0007](../adr/0007-partition-by-order-id.md)).
 
 | Integration event | Published when | Consumed by (examples) | Translated from |
 |-------------------|----------------|------------------------|-----------------|
@@ -74,4 +77,6 @@ finalized in Phase 3). All keyed by `orderId` ([ADR 0007](../adr/0007-partition-
 - Backward-compatible changes (add optional/defaulted field) keep the same event with a bumped
   minor `schemaVersion`.
 - Breaking changes create a new event version (`OrderConfirmed.v2`); both run until consumers migrate.
-- CI validates every schema change against the Schema Registry's `BACKWARD` rule and fails the build on violation.
+- CI runs a build-time `BACKWARD` check: `SchemaCompatibilityTest` compares the current contract against a
+  committed baseline of the published schema and fails the build on a breaking change. This uses Avro's
+  compatibility API locally; validating against a live Schema Registry in the pipeline is not set up.
